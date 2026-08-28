@@ -26,8 +26,8 @@ type command struct {
 
 var commands = []command{
 	{"prepare", "prepare", "build recovery.gz + vanilla image with custom boot partition", false, runPrepare},
-	{"adopt", "adopt <node|all>", "install the recovery mechanism on a live node via SSH", false, notImplemented},
-	{"dryrun", "dryrun <node|all>", "validate the download+decode pipeline on a node, harmlessly", false, notImplemented},
+	{"adopt", "adopt <node|all>", "install the recovery mechanism on a live node via SSH", false, runAdopt},
+	{"dryrun", "dryrun <node|all>", "validate the download+decode pipeline on a node, harmlessly", false, runDryrun},
 	{"bake", "bake", "produce out/golden.img.zst using the builder node", false, notImplemented},
 	{"flash", "flash <node...|all>", "reflash node(s) from the golden image", false, notImplemented},
 	{"status", "status", "table of node, ip, reachable, hostname, build-id, uptime", false, notImplemented},
@@ -38,7 +38,15 @@ var commands = []command{
 func notImplemented(*config.Config, []string) error { return errNotImplemented }
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	err := run(os.Args[1:])
+	switch {
+	case err == nil:
+		return
+	case errors.Is(err, flag.ErrHelp):
+		// The usage text has already been printed; asking for help is not
+		// a failure.
+		return
+	default:
 		fmt.Fprintf(os.Stderr, "rasputin: %v\n", err)
 		os.Exit(1)
 	}

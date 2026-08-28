@@ -152,3 +152,16 @@
   space ≥ 2× recovery.gz) whose sudo failure message prints the exact
   remedy. sshx is tested against a real in-process SSH server, so the
   user-fallback and host-key-pinning paths run a genuine handshake.
+
+- 2026-08-28 · T14 · internal/cluster + the `adopt` and `dryrun` commands.
+  Adopt (sequential by design — each node reboots) runs preflight, backs up
+  config.txt to config.txt.pre-rasputin exactly once, pushes recovery.gz and
+  nodes.conf, patches the node's config.txt with the same PatchConfigTxt the
+  image build uses, syncs, then by default reboots and proves the node comes
+  back with the initramfs line intact and no agent errors in dmesg.
+  Dryrun starts the HTTP server, arms the reflash-dryrun flag with its URL,
+  reboots, prints transfer progress every 10s while waiting, then reads
+  reflash-dryrun.log and passes only on `result: OK` with the flag cleared
+  (a lingering flag means the report is stale). RebootAndWait waits for the
+  node to actually go down first, so a reboot that never happened cannot
+  pass silently. `--help` now exits 0 instead of erroring.
