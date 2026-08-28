@@ -109,3 +109,18 @@
   journal, apt lists; deliberately does not reboot). Rendering uses
   missingkey=error. Tests assert the key lines and run `sh -n` over every
   rendered script.
+
+- 2026-08-28 · T11 · `rasputin prepare` wires T04+T08+T09+T10 together:
+  builds out/recovery.gz, copies the cached stock image to
+  out/vanilla-custom.img, writes recovery.gz + nodes.conf + the five
+  provisioning files + rasputin-build-id + the `ssh` marker onto the FAT boot
+  partition, patches config.txt and cmdline.txt, then zstd-compresses
+  (SpeedBetterCompression, CRC on) to out/vanilla-custom.img.zst and records
+  everything in out/meta/prepare.json. `-initramfs-only` is the Makefile's
+  build step. Real run: 2,977,955,840 B → 735,551,529 B (24.7%) in ~11s with
+  a warm cache; build id 20260828T233619Z-40fd3e. The agent is now 6.5 MB
+  (netlink + dhcp + zstd) and recovery.gz 2.7 MB — still well inside the RAM
+  budget. TestImageContents (the no-hardware end-to-end gate) passes: /init
+  is a static aarch64 ELF inside the cpio, dev/console is char 5:1, all four
+  MACs are in nodes.conf, config.txt has no auto_initramfs, cmdline.txt has
+  neither an init= hook nor `resize`, and firstrun.sh passes `sh -n`.

@@ -25,7 +25,7 @@ type command struct {
 }
 
 var commands = []command{
-	{"prepare", "prepare", "build recovery.gz + vanilla image with custom boot partition", false, notImplemented},
+	{"prepare", "prepare", "build recovery.gz + vanilla image with custom boot partition", false, runPrepare},
 	{"adopt", "adopt <node|all>", "install the recovery mechanism on a live node via SSH", false, notImplemented},
 	{"dryrun", "dryrun <node|all>", "validate the download+decode pipeline on a node, harmlessly", false, notImplemented},
 	{"bake", "bake", "produce out/golden.img.zst using the builder node", false, notImplemented},
