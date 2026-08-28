@@ -72,3 +72,13 @@
   cover the pipeline against httptest, including corrupted and truncated
   streams, and assert the safety invariant directly: with an unreachable
   server the card is never opened for writing.
+
+- 2026-08-28 · T08 · internal/vanilla.Ensure: streams the stock image from
+  the redirecting download endpoint, hashes the xz and the decoded image as
+  they pass, decodes with ulikunitz/xz into cache/<name>.img via a temp file
+  (so a failed download leaves nothing that could be mistaken for a good
+  image), and records provenance in out/meta/vanilla.json. Re-runs are served
+  from the cache unless the file is missing or its size no longer matches.
+  Hidden CLI subcommand `vanilla-fetch` drives it. Fetched for real:
+  2026-06-18-raspios-trixie-arm64-lite.img — 500 MiB xz → 2,977,955,840 B
+  image, sha256 e235fd24…c33a9, in ~100s.

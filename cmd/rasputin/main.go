@@ -18,17 +18,21 @@ type command struct {
 	name  string
 	usage string
 	short string
-	run   func(cfg *config.Config, args []string) error
+	// hidden keeps a command out of the help text. Used for build-time
+	// helpers that are not part of the operator-facing surface.
+	hidden bool
+	run    func(cfg *config.Config, args []string) error
 }
 
 var commands = []command{
-	{"prepare", "prepare", "build recovery.gz + vanilla image with custom boot partition", notImplemented},
-	{"adopt", "adopt <node|all>", "install the recovery mechanism on a live node via SSH", notImplemented},
-	{"dryrun", "dryrun <node|all>", "validate the download+decode pipeline on a node, harmlessly", notImplemented},
-	{"bake", "bake", "produce out/golden.img.zst using the builder node", notImplemented},
-	{"flash", "flash <node...|all>", "reflash node(s) from the golden image", notImplemented},
-	{"status", "status", "table of node, ip, reachable, hostname, build-id, uptime", notImplemented},
-	{"serve", "serve", "run the HTTP server standalone (debugging)", notImplemented},
+	{"prepare", "prepare", "build recovery.gz + vanilla image with custom boot partition", false, notImplemented},
+	{"adopt", "adopt <node|all>", "install the recovery mechanism on a live node via SSH", false, notImplemented},
+	{"dryrun", "dryrun <node|all>", "validate the download+decode pipeline on a node, harmlessly", false, notImplemented},
+	{"bake", "bake", "produce out/golden.img.zst using the builder node", false, notImplemented},
+	{"flash", "flash <node...|all>", "reflash node(s) from the golden image", false, notImplemented},
+	{"status", "status", "table of node, ip, reachable, hostname, build-id, uptime", false, notImplemented},
+	{"serve", "serve", "run the HTTP server standalone (debugging)", false, notImplemented},
+	{"vanilla-fetch", "vanilla-fetch", "download and cache the stock Raspberry Pi OS image", true, runVanillaFetch},
 }
 
 func notImplemented(*config.Config, []string) error { return errNotImplemented }
@@ -76,6 +80,9 @@ func lookup(name string) *command {
 func usage(w io.Writer) {
 	fmt.Fprintf(w, "usage: rasputin [-c rasputin.yaml] <command> [args]\n\ncommands:\n")
 	for _, c := range commands {
+		if c.hidden {
+			continue
+		}
 		fmt.Fprintf(w, "  %-20s %s\n", c.usage, c.short)
 	}
 }
