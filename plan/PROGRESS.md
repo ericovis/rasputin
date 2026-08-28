@@ -30,3 +30,14 @@
   internal/mbr (Parse/Read/UsedBytes, disk-ID exposed since dd-cloning it is
   what keeps root=PARTUUID valid, rejects GPT-protective and unsigned
   sectors). UsedBytes takes the max partition end, not the last entry.
+
+- 2026-08-28 · T05 · Agent skeleton: internal/agent/mode.go (portable
+  SelectMode with dryrun>capture>reflash priority, first-line URL override,
+  ModeError when no URL is resolvable) + boot_linux.go (pseudo-FS mounts
+  tolerating EBUSY, 10s device wait, ro flag read, WithBootRW helper,
+  switch_root per FACTS, Reboot, eth0 MAC) + boot_other.go stubs so darwin
+  still builds/vets/tests. cmd/agent/main.go refuses to run unless PID 1
+  (or RASPUTIN_AGENT_TEST=1), recovers panics into a log loop, and never
+  exits. SelectMode takes defaultURL as a second argument (the plan's
+  one-argument signature cannot express the "no default" error case).
+  Design concern about ModeError not booting recorded in BLOCKERS.md.
