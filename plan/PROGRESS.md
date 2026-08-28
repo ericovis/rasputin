@@ -136,3 +136,19 @@
   upload can never be mistaken for a golden image; a repeat POST after
   success answers 200 again rather than making the node re-stream. 14 tests,
   race-clean.
+
+- 2026-08-28 · T13 · Three packages. internal/state: atomic 0600
+  out/state.json cache (last IP, SSH user, host key, hostname, build id);
+  a corrupt file is treated as empty rather than fatal. internal/sshx:
+  key-based dialer that tries cfg.ssh.users in order, Run/Sudo/Output/
+  Push (via `sudo -n sh -c 'mkdir -p … && cat > … && chmod && sync'`, no
+  sftp)/Fetch, and trust-on-first-use host keys pinned in the state cache —
+  ForgetHostKey is what every reflash path must call, since nodes regenerate
+  their keys by design. internal/nodes: Select (name | MAC | last-seen IP |
+  all), Candidates (cache → mDNS → ARP), Connect — which **always verifies
+  eth0's MAC after connecting and refuses a mismatched machine**, given this
+  cluster's history of duplicate hostnames — WaitFor with a deadline-bounded
+  poll, and RunPreflight (aarch64, /boot/firmware mounted, sudo -n, boot
+  space ≥ 2× recovery.gz) whose sudo failure message prints the exact
+  remedy. sshx is tested against a real in-process SSH server, so the
+  user-fallback and host-key-pinning paths run a genuine handshake.
