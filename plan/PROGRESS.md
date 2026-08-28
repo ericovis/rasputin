@@ -50,3 +50,13 @@
   Makefile `build` target calls it). Added an exported cpio.Read/Find so the
   build can verify its own archive; the T02 test now uses it. Current sizes:
   agent 1.70 MB, recovery.gz 709 KB — well inside the RAM budget.
+
+- 2026-08-28 · T06 · internal/agent/netup_linux.go: NetworkUp brings up lo
+  and eth0 via netlink, waits for the link to appear (logging "driver
+  missing?" every 10s), waits up to 30s for carrier (advisory), then DORA
+  via nclient4 with AddrReplace + RouteReplace. Retries DHCP forever every
+  3s; no renewal loop by design (a recovery session is minutes long and a
+  renewal goroutine is another way to wedge PID 1). Note: `go get
+  github.com/insomniacslk/dhcp/dhcpv4/nclient4` was needed separately —
+  its linux-only transitive deps (mdlayher/packet, u-root/uio) are invisible
+  to a darwin-only `go get`. Real validation is hardware T18.

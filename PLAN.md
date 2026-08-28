@@ -116,7 +116,7 @@ Status: todo | doing | done | blocked. Edit in place.
 | T03 | kmsg/log + MBR parser packages                  | 0     | T01         | [P]A| done   |
 | T04 | initramfs assembler (build agent, pack, verify) | 0     | T02,T05     |     | done   |
 | T05 | agent: boot, mounts, flags, switch_root         | 1     | T01,T03     | [P]A| done   |
-| T06 | agent: network up (netlink + DHCP)              | 1     | T05         |     | todo   |
+| T06 | agent: network up (netlink + DHCP)              | 1     | T05         |     | done   |
 | T07 | agent: reflash/dryrun/capture pipelines         | 1     | T05,T06     |     | todo   |
 | T08 | vanilla image download + xz decode + cache      | 2     | T01         | [P]A| todo   |
 | T09 | FAT32 boot-partition editor (go-diskfs)         | 2     | T08         |     | todo   |
