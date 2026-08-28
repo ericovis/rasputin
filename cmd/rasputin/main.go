@@ -11,9 +11,6 @@ import (
 	"github.com/ericovis/rasputin/internal/config"
 )
 
-// errNotImplemented marks a command that is planned but not built yet.
-var errNotImplemented = errors.New("not implemented")
-
 type command struct {
 	name  string
 	usage string
@@ -28,14 +25,12 @@ var commands = []command{
 	{"prepare", "prepare", "build recovery.gz + vanilla image with custom boot partition", false, runPrepare},
 	{"adopt", "adopt <node|all>", "install the recovery mechanism on a live node via SSH", false, runAdopt},
 	{"dryrun", "dryrun <node|all>", "validate the download+decode pipeline on a node, harmlessly", false, runDryrun},
-	{"bake", "bake", "produce out/golden.img.zst using the builder node", false, notImplemented},
-	{"flash", "flash <node...|all>", "reflash node(s) from the golden image", false, notImplemented},
+	{"bake", "bake", "produce out/golden.img.zst using the builder node", false, runBake},
+	{"flash", "flash <node...|all>", "reflash node(s) from the golden image", false, runFlash},
 	{"status", "status", "table of node, ip, reachable, hostname, build-id, uptime", false, runStatus},
-	{"serve", "serve", "run the HTTP server standalone (debugging)", false, notImplemented},
+	{"serve", "serve", "run the HTTP server standalone (debugging)", false, runServe},
 	{"vanilla-fetch", "vanilla-fetch", "download and cache the stock Raspberry Pi OS image", true, runVanillaFetch},
 }
-
-func notImplemented(*config.Config, []string) error { return errNotImplemented }
 
 func main() {
 	err := run(os.Args[1:])

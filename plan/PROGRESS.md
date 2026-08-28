@@ -165,3 +165,27 @@
   (a lingering flag means the report is stale). RebootAndWait waits for the
   node to actually go down first, so a reboot that never happened cannot
   pass silently. `--help` now exits 0 instead of erroring.
+
+- 2026-08-28 · T15 · `flash`, `bake`, `status` and `serve`. flash runs nodes
+  in parallel, forgets each recorded host key before rebooting (the clone
+  regenerates them), watches server progress, then verifies build id ==
+  golden build id, hostname == node name and systemd running/degraded.
+  bake drives the full builder sequence: reflash with the prepared stock
+  image → wait for /var/lib/rasputin/provisioned (surfacing the provision
+  journal on timeout) → rasputin-seal → capture flag → await the upload →
+  **verify the captured image decodes end to end and its length matches its
+  own partition table before it is allowed to become golden.img.zst** →
+  write out/meta/golden.json → confirm the builder comes back healthy.
+  status probes in parallel, read-only.
+
+  Two live-cluster findings, both recorded in FACTS.md and BLOCKERS.md:
+  1. **The owner's SSH key is passphrase protected.** sshx now authenticates
+     through the SSH agent first and falls back to the key file, with an
+     error that says `ssh-add` when neither works.
+  2. **rasputin003 is not offline** — it is up at 192.168.0.222 with the
+     right MAC, but its hostname is `rasputin002`, so mDNS never finds it.
+     Only the ARP candidate reaches it, and it was being starved by a shared
+     dial budget; each candidate address now gets its own timeout. The MAC
+     check did exactly its job here: nothing mistook it for rasputin002.
+  `rasputin status` against the live cluster now prints 4 rows, all four
+  reachable and MAC-verified, and modifies nothing.
