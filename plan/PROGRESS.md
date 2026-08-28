@@ -17,3 +17,9 @@
   "not implemented"). Learned: server.port needs a *int so an explicit 0
   ("random free port") is distinguishable from an absent key defaulting to
   8080. `make build` will fail until T04 adds cmd/mkinitramfs — intended.
+
+- 2026-08-28 · T02 · internal/cpio: newc writer (WriteDir/WriteFile/
+  WriteCharDev/Close) with 4-byte name+data padding, zero mtime for
+  reproducible builds, lowercase %08x fields, sticky write errors. Tests:
+  byte-exact golden for the dev/console entry from FACTS.md plus a
+  round-trip through a minimal in-test newc reader (darwin cpio not used).

@@ -112,7 +112,7 @@ Status: todo | doing | done | blocked. Edit in place.
 | id  | task                                            | phase | deps        | par | status |
 |-----|-------------------------------------------------|-------|-------------|-----|--------|
 | T01 | Module scaffold, YAML config, .gitignore        | 0     | —           |     | done   |
-| T02 | cpio newc writer package                        | 0     | T01         | [P]A| todo   |
+| T02 | cpio newc writer package                        | 0     | T01         | [P]A| done   |
 | T03 | kmsg/log + MBR parser packages                  | 0     | T01         | [P]A| todo   |
 | T04 | initramfs assembler (build agent, pack, verify) | 0     | T02,T05     |     | todo   |
 | T05 | agent: boot, mounts, flags, switch_root         | 1     | T01,T03     | [P]A| todo   |
