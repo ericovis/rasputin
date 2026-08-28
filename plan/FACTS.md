@@ -54,10 +54,23 @@ SSH works today as user `ericovis` (the Mac's default user, key
   resolved URL + sha256 in `out/meta/vanilla.json`. Cache the decoded .img in
   `cache/` (gitignored).
 - Image layout: MBR; p1 FAT32 boot (`bootfs`), p2 ext4 root (`rootfs`).
-  On boot the stock image auto-expands rootfs to the whole card via an
-  `init=` hook in cmdline.txt — `prepare` MUST remove that hook (T11) and let
-  firstrun.sh grow rootfs to the configured cap instead, or captures become
-  32 GB streams.
+  On boot the stock image auto-expands rootfs to the whole card — `prepare`
+  MUST remove that hook (T11) and let firstrun.sh grow rootfs to the
+  configured cap instead, or captures become 32 GB streams. **Verified on
+  the 2026-06-18 Trixie image (T09): the hook is now a bare `resize` token,
+  not an `init=/usr/lib/raspberrypi-sys-mods/init_resize.sh` hook.** Both
+  forms are stripped by bootfs.WithFirstrun.
+- Verified image (T08): `2026-06-18-raspios-trixie-arm64-lite.img`,
+  2,977,955,768 B decoded (sha256 e235fd24…c33a9), p1 starts at sector 8192,
+  stock cmdline.txt is 110 B with `root=PARTUUID=041bba91-02`, stock
+  config.txt is 1272 B and ends with an `[all]` section.
+- The boot partition is mounted at `/boot/firmware` on Bookworm/Trixie, so
+  the firstrun hook is `systemd.run=/boot/firmware/firstrun.sh` (PLAN.md's
+  architecture section says `/boot/firstrun.sh`, which contradicts its own
+  T10 paths; /boot/firmware is what the official Imager writes).
+- go-diskfs quirk (T09): reading a FAT file to EOF returns the tail of the
+  last cluster (stock config.txt: 1272 B on disk, 1536 B read back). Always
+  bound the read by `Stat().Size()` — `bootfs.ReadFile` does.
 - config.txt on Bookworm/Trixie has `auto_initramfs=1`; our explicit
   `initramfs recovery.gz followkernel` line replaces it (remove auto_initramfs).
 - cmdline.txt is a single line; `root=PARTUUID=xxxxxxxx-02` — dd-cloning the

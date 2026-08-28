@@ -82,3 +82,16 @@
   Hidden CLI subcommand `vanilla-fetch` drives it. Fetched for real:
   2026-06-18-raspios-trixie-arm64-lite.img — 500 MiB xz → 2,977,955,840 B
   image, sha256 e235fd24…c33a9, in ~100s.
+
+- 2026-08-28 · T09 · internal/bootfs. Image wrapper over go-diskfs
+  (Open/ReadFile/WriteFile/Remove/Exists/List/Stat) plus pure patch functions
+  (PatchConfigTxt, WithFirstrun/WithoutFirstrun, NodesConf). Verified against
+  the real 2026-06-18 Trixie image: reads, large writes (720 KB), shrinking
+  overwrites, deletes and re-open all round-trip correctly, so **the mtools
+  fallback is NOT needed**. Two findings recorded in FACTS.md: go-diskfs
+  over-reads FAT files to the end of the last cluster (bounded now by the
+  directory-entry size), and this image's rootfs auto-expansion hook is a
+  bare `resize` token rather than an `init=` hook. Stock config.txt and
+  cmdline.txt committed as testdata fixtures. Deviation: the firstrun hook
+  path is /boot/firmware/firstrun.sh, not PLAN.md's /boot/firstrun.sh —
+  see FACTS.md; PLAN's own T10 steps use /boot/firmware paths.
