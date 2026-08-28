@@ -61,7 +61,7 @@ SSH works today as user `ericovis` (the Mac's default user, key
   not an `init=/usr/lib/raspberrypi-sys-mods/init_resize.sh` hook.** Both
   forms are stripped by bootfs.WithFirstrun.
 - Verified image (T08): `2026-06-18-raspios-trixie-arm64-lite.img`,
-  2,977,955,768 B decoded (sha256 e235fd24…c33a9), p1 starts at sector 8192,
+  2,977,955,840 B decoded (sha256 e235fd24…c33a9), p1 starts at sector 8192,
   stock cmdline.txt is 110 B with `root=PARTUUID=041bba91-02`, stock
   config.txt is 1272 B and ends with an `[all]` section.
 - The boot partition is mounted at `/boot/firmware` on Bookworm/Trixie, so

@@ -95,3 +95,17 @@
   cmdline.txt committed as testdata fixtures. Deviation: the firstrun hook
   path is /boot/firmware/firstrun.sh, not PLAN.md's /boot/firstrun.sh —
   see FACTS.md; PLAN's own T10 steps use /boot/firmware paths.
+
+- 2026-08-28 · T10 · internal/provision: five go:embed'd POSIX-sh/systemd
+  templates rendered from the cluster config — firstrun.sh (grow rootfs to
+  the cap with sfdisk+resize2fs, create the locked `berry` account with the
+  authorized key and validated sudoers drop-in, sshd keys-only, timezone and
+  locale, install+enable the identity and provision units, write
+  /etc/rasputin-release, then strip the systemd.run triplet from cmdline.txt
+  so it can never run twice), rasputin-identity (+unit: hostname from the
+  eth0 MAC via nodes.conf, ssh-keygen -A when host keys are missing, never
+  blocks the boot), rasputin-provision.service (apt with Restart=on-failure
+  and a provisioned marker), and rasputin-seal (host keys, machine-id,
+  journal, apt lists; deliberately does not reboot). Rendering uses
+  missingkey=error. Tests assert the key lines and run `sh -n` over every
+  rendered script.

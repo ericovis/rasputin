@@ -1,0 +1,143 @@
+#!/bin/sh
+# rasputin firstrun — runs once, as root, on the first boot of a prepared
+# image, launched by systemd.run from cmdline.txt.
+#
+# Everything that cannot be done to a FAT boot partition from the build host
+# happens here: growing the root filesystem, creating the operator account,
+# hardening sshd, and installing the services that give a cloned card its
+# identity. The last thing it does is remove itself from cmdline.txt, so it
+# can never run twice; systemd.run_success_action=reboot then reboots.
+#
+# Every step is idempotent, so a half-finished run is fixed by running again.
+set -eu
+
+BOOT=/boot/firmware
+LOG=$BOOT/rasputin-firstrun.log
+USER_NAME={{.User}}
+ROOTFS_CAP_GB={{.RootfsSizeGB}}
+
+log() {
+    echo "rasputin: $*" > /dev/kmsg 2>/dev/null || true
+    echo "$(date -Is 2>/dev/null || true) rasputin: $*" >> "$LOG" 2>/dev/null || true
+    echo "rasputin: $*"
+}
+
+fail() {
+    log "FAILED: $*"
+    exit 1
+}
+
+log "firstrun starting on $(uname -n)"
+
+# --- grow the root filesystem to the configured cap --------------------------
+# Not to the whole card: a capture streams the used prefix of the disk, and a
+# 32 GB rootfs would mean a 32 GB golden image.
+grow_rootfs() {
+    disk=/dev/mmcblk0
+    part=2
+    card_bytes=$(blockdev --getsize64 "$disk" 2>/dev/null || echo 0)
+    cap_bytes=$((ROOTFS_CAP_GB * 1024 * 1024 * 1024))
+    [ "$card_bytes" -gt 0 ] && [ "$cap_bytes" -gt "$card_bytes" ] && cap_bytes=$card_bytes
+
+    start=$(cat /sys/block/mmcblk0/mmcblk0p2/start 2>/dev/null || echo 0)
+    [ "$start" -gt 0 ] || { log "cannot find the rootfs start sector; skipping resize"; return 0; }
+    want_sectors=$((cap_bytes / 512 - start))
+    have_sectors=$(cat /sys/block/mmcblk0/mmcblk0p2/size 2>/dev/null || echo 0)
+    if [ "$have_sectors" -ge "$want_sectors" ]; then
+        log "rootfs partition is already $((have_sectors / 2048)) MiB; not resizing"
+    else
+        log "growing the rootfs partition to ${ROOTFS_CAP_GB} GB"
+        printf ',%s\n' "$want_sectors" | sfdisk --no-reread -N "$part" "$disk" || \
+            fail "sfdisk could not grow ${disk}p${part}"
+        partx -u "$disk" 2>/dev/null || partprobe "$disk" 2>/dev/null || true
+    fi
+    resize2fs "${disk}p${part}" || fail "resize2fs failed on ${disk}p${part}"
+    log "rootfs is now $(df -h / | awk 'NR==2 {print $2}')"
+}
+grow_rootfs
+
+# --- operator account --------------------------------------------------------
+if ! id -u "$USER_NAME" >/dev/null 2>&1; then
+    log "creating user $USER_NAME"
+    useradd -m -s /bin/bash "$USER_NAME" || fail "useradd $USER_NAME"
+fi
+# No password login anywhere: the key is the only way in.
+passwd -l "$USER_NAME" >/dev/null 2>&1 || true
+for group in sudo adm users video plugdev; do
+    getent group "$group" >/dev/null 2>&1 && usermod -aG "$group" "$USER_NAME" || true
+done
+
+home=$(getent passwd "$USER_NAME" | cut -d: -f6)
+install -d -m 0700 -o "$USER_NAME" -g "$USER_NAME" "$home/.ssh"
+cat > "$home/.ssh/authorized_keys" <<'AUTHORIZED_KEYS'
+{{.AuthorizedKeys}}
+AUTHORIZED_KEYS
+chmod 0600 "$home/.ssh/authorized_keys"
+chown "$USER_NAME:$USER_NAME" "$home/.ssh/authorized_keys"
+log "installed authorized_keys for $USER_NAME"
+
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$USER_NAME" > /etc/sudoers.d/010-rasputin
+chmod 0440 /etc/sudoers.d/010-rasputin
+visudo -c -f /etc/sudoers.d/010-rasputin >/dev/null || \
+    { rm -f /etc/sudoers.d/010-rasputin; fail "the generated sudoers file is invalid"; }
+log "passwordless sudo configured for $USER_NAME"
+
+# --- sshd hardening ----------------------------------------------------------
+# Not restarted here: this boot ends in a reboot anyway.
+install -d -m 0755 /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/rasputin.conf <<'SSHD'
+# Managed by rasputin. Keys only.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+SSHD
+chmod 0644 /etc/ssh/sshd_config.d/rasputin.conf
+log "sshd hardened: password authentication off"
+
+# --- timezone and locale -----------------------------------------------------
+if [ -f /usr/share/zoneinfo/{{.Timezone}} ]; then
+    ln -sf /usr/share/zoneinfo/{{.Timezone}} /etc/localtime
+    echo {{.Timezone}} > /etc/timezone
+    log "timezone set to {{.Timezone}}"
+fi
+if [ -f /etc/locale.gen ]; then
+    sed -i 's/^# *\({{.Locale}} \)/\1/' /etc/locale.gen
+    grep -q '^{{.Locale}} ' /etc/locale.gen || echo '{{.Locale}} UTF-8' >> /etc/locale.gen
+    locale-gen >/dev/null 2>&1 || true
+    update-locale LANG={{.Locale}} >/dev/null 2>&1 || true
+    log "locale set to {{.Locale}}"
+fi
+
+# --- identity, provisioning and seal helpers ---------------------------------
+install -m 0755 "$BOOT/rasputin-identity" /usr/local/sbin/rasputin-identity
+install -m 0755 "$BOOT/rasputin-seal" /usr/local/sbin/rasputin-seal
+install -m 0644 "$BOOT/rasputin-identity.service" /etc/systemd/system/rasputin-identity.service
+install -m 0644 "$BOOT/rasputin-provision.service" /etc/systemd/system/rasputin-provision.service
+systemctl enable rasputin-identity.service >/dev/null 2>&1 || fail "cannot enable rasputin-identity"
+systemctl enable rasputin-provision.service >/dev/null 2>&1 || fail "cannot enable rasputin-provision"
+log "identity and provision services installed"
+
+build_id=$(cat "$BOOT/rasputin-build-id" 2>/dev/null || echo unknown)
+cat > /etc/rasputin-release <<RELEASE
+build_id=$build_id
+base={{.BaseImage}}
+baked_at=$(date -Is 2>/dev/null || echo unknown)
+RELEASE
+log "wrote /etc/rasputin-release (build_id=$build_id)"
+
+# --- disarm: firstrun must never run twice -----------------------------------
+# The same token removal PatchCmdlineTxt does, in sh: strip the systemd.run
+# triplet and leave everything else exactly as it is.
+if [ -f "$BOOT/cmdline.txt" ]; then
+    sed -i -e 's| systemd\.run=[^ ]*||g' \
+           -e 's| systemd\.run_success_action=[^ ]*||g' \
+           -e 's| systemd\.unit=kernel-command-line\.target||g' \
+           "$BOOT/cmdline.txt"
+    sync
+    log "removed the firstrun hook from cmdline.txt"
+else
+    log "WARNING: $BOOT/cmdline.txt is missing; firstrun may run again"
+fi
+
+log "firstrun complete; rebooting"
+exit 0

@@ -1,0 +1,68 @@
+#!/bin/sh
+# rasputin-identity — give a cloned card its own identity, on every boot.
+#
+# Every node runs a byte-identical copy of the golden image, so the hostname
+# cannot come from the image. It comes from the node's ethernet MAC, looked
+# up in nodes.conf on the boot partition, which the CLI writes when it
+# prepares an image.
+#
+# This runs before sshd and avahi so nothing announces the wrong name, and it
+# must never block the boot: an unknown MAC gets a placeholder name and a
+# loud log line, not a failure.
+set -u
+
+BOOT=/boot/firmware
+NODES=$BOOT/nodes.conf
+
+log() {
+    echo "rasputin: $*" > /dev/kmsg 2>/dev/null || true
+    echo "$(date -Is 2>/dev/null || true) rasputin: $*" >> "$BOOT/rasputin-firstrun.log" 2>/dev/null || true
+    echo "rasputin: $*"
+}
+
+mac=$(cat /sys/class/net/eth0/address 2>/dev/null || echo "")
+if [ -z "$mac" ]; then
+    log "identity: eth0 has no MAC address; leaving the hostname alone"
+    exit 0
+fi
+
+want=""
+if [ -r "$NODES" ]; then
+    # Lines are `mac<TAB>hostname`; comments and blanks are skipped.
+    want=$(awk -v m="$mac" '
+        /^[[:space:]]*#/ { next }
+        NF >= 2 { if (tolower($1) == tolower(m)) { print $2; exit } }
+    ' "$NODES")
+else
+    log "identity: $NODES is missing"
+fi
+
+if [ -z "$want" ]; then
+    want="rasputin-unknown-$(echo "$mac" | tr -d ':' | tail -c 7)"
+    log "identity: MAC $mac is not in nodes.conf — using $want"
+fi
+
+current=$(cat /etc/hostname 2>/dev/null | tr -d '[:space:]')
+if [ "$current" != "$want" ]; then
+    log "identity: $mac -> $want (was ${current:-none})"
+    echo "$want" > /etc/hostname
+    if grep -q '^127\.0\.1\.1' /etc/hosts 2>/dev/null; then
+        sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$want/" /etc/hosts
+    else
+        printf '127.0.1.1\t%s\n' "$want" >> /etc/hosts
+    fi
+    hostname "$want" 2>/dev/null || hostnamectl set-hostname "$want" 2>/dev/null || true
+fi
+
+# The golden image is sealed with its host keys removed, so that every node
+# does not answer with the same fingerprint. Regenerate them if they are gone.
+if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
+    log "identity: regenerating SSH host keys"
+    ssh-keygen -A >/dev/null 2>&1 || log "identity: ssh-keygen -A failed"
+fi
+
+# An empty machine-id makes systemd generate a fresh one at boot; a missing
+# file does not, so make sure it at least exists.
+[ -f /etc/machine-id ] || : > /etc/machine-id
+
+exit 0

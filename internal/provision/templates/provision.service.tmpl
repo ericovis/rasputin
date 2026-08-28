@@ -1,0 +1,26 @@
+[Unit]
+Description=rasputin provisioning (install the cluster package set)
+Documentation=https://github.com/ericovis/rasputin
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/rasputin/provisioned
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=DEBIAN_FRONTEND=noninteractive
+ExecStartPre=/bin/sh -c 'echo "rasputin: provisioning {{.PackageList}}" > /dev/kmsg 2>/dev/null || true'
+ExecStart=/usr/bin/apt-get update
+ExecStart=/usr/bin/apt-get install -y --no-install-recommends {{.PackageList}}
+ExecStartPost=/bin/mkdir -p /var/lib/rasputin
+ExecStartPost=/bin/touch /var/lib/rasputin/provisioned
+ExecStartPost=/bin/sh -c 'systemctl disable rasputin-provision.service >/dev/null 2>&1 || true'
+ExecStartPost=/bin/sh -c 'echo "rasputin: provisioning complete" > /dev/kmsg 2>/dev/null || true'
+# A first boot often races the network or a busy mirror; retry rather than
+# leaving a node half-provisioned.
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

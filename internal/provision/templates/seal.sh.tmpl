@@ -1,0 +1,37 @@
+#!/bin/sh
+# rasputin-seal — strip a node of everything that must be unique before its
+# card is captured as the golden image.
+#
+# Run over SSH by `rasputin bake`, immediately before the capture. It does
+# not reboot: the CLI decides what happens next.
+set -u
+
+log() {
+    echo "rasputin: $*" > /dev/kmsg 2>/dev/null || true
+    echo "rasputin: $*"
+}
+
+log "seal: removing SSH host keys"
+rm -f /etc/ssh/ssh_host_*
+
+log "seal: truncating machine-id"
+: > /etc/machine-id
+rm -f /var/lib/dbus/machine-id
+
+log "seal: clearing the provisioning marker so clones re-check their packages"
+rm -f /var/lib/rasputin/provisioned
+
+log "seal: vacuuming the journal"
+journalctl --rotate >/dev/null 2>&1 || true
+journalctl --vacuum-time=1s >/dev/null 2>&1 || true
+
+log "seal: clearing logs, apt lists and shell history"
+rm -rf /var/lib/apt/lists/* /var/log/*.gz /var/log/*.1 2>/dev/null || true
+find /var/log -type f -name '*.log' -exec truncate -s0 {} + 2>/dev/null || true
+rm -f /root/.bash_history /home/*/.bash_history 2>/dev/null || true
+
+# Zeroing free space would make the capture compress far better, but on a
+# 32 GB card it also writes tens of gigabytes to the flash. Not worth it.
+sync
+log "seal: complete"
+exit 0

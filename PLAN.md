@@ -120,7 +120,7 @@ Status: todo | doing | done | blocked. Edit in place.
 | T07 | agent: reflash/dryrun/capture pipelines         | 1     | T05,T06     |     | done   |
 | T08 | vanilla image download + xz decode + cache      | 2     | T01         | [P]A| done   |
 | T09 | FAT32 boot-partition editor (go-diskfs)         | 2     | T08         |     | done   |
-| T10 | firstrun.sh / identity / provision templates    | 2     | T01         | [P]A| todo   |
+| T10 | firstrun.sh / identity / provision templates    | 2     | T01         | [P]A| done   |
 | T11 | `prepare` command (vanilla + boot mods + zstd)  | 2     | T04,T09,T10 |     | todo   |
 | T12 | HTTP server (serve, capture, progress)          | 3     | T01         | [P]B| todo   |
 | T13 | SSH client + node resolution + state cache      | 3     | T01         | [P]B| todo   |

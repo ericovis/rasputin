@@ -1,0 +1,18 @@
+[Unit]
+Description=rasputin node identity (hostname and host keys from the MAC address)
+Documentation=https://github.com/ericovis/rasputin
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target sshd.service ssh.service avahi-daemon.service
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/rasputin-identity
+# Never let an identity problem stop a node from booting: a node that boots
+# with the wrong name can be fixed over SSH; one that does not boot cannot.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=sysinit.target
