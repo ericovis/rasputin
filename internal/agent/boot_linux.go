@@ -15,7 +15,7 @@ import (
 // Fixed device paths. A Pi 3 booting from SD always presents the card as
 // mmcblk0 with p1 = FAT boot, p2 = ext4 root (FACTS.md).
 const (
-	Disk      = "/dev/mmcblk0"
+	DiskPath  = "/dev/mmcblk0"
 	BootPart  = "/dev/mmcblk0p1"
 	RootPart  = "/dev/mmcblk0p2"
 	BootMount = "/boot"

@@ -151,12 +151,3 @@ func dhcpConfigure(ctx context.Context, log *kmsg.Logger) (net.IP, error) {
 		ip, net.IP(mask), ack.Router(), ack.IPAddressLeaseTime(0))
 	return ip, nil
 }
-
-func sleepCtx(ctx context.Context, d time.Duration) {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-	case <-t.C:
-	}
-}

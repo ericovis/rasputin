@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -84,9 +85,27 @@ func run(log *kmsg.Logger) {
 			"(the flag file is empty and no default URL was baked in) — "+
 			"the SD card has NOT been touched")
 	default:
-		// Reflash, dryrun and capture pipelines arrive with T07.
-		hold(log, fmt.Sprintf("mode %s is not implemented in this build", mode))
+		runNetworkMode(log, mode, url)
 	}
+}
+
+// runNetworkMode brings up the network and runs reflash, dryrun or capture.
+// Each of those ends in a reboot; if one returns instead, something is wrong
+// enough that holding is safer than looping.
+func runNetworkMode(log *kmsg.Logger, mode agent.Mode, url string) {
+	ctx := context.Background()
+	if _, err := agent.NetworkUp(ctx, log); err != nil {
+		hold(log, fmt.Sprintf("bringing up the network: %v", err))
+		return
+	}
+	client := agent.NewClient(url, agent.MAC(), log)
+	if err := agent.RunMode(ctx, mode, client, agent.SDCard(), agent.Sys()); err != nil {
+		hold(log, fmt.Sprintf("mode %s: %v", mode, err))
+		return
+	}
+	// RunMode only returns after a successful reboot call, which should not
+	// return at all.
+	hold(log, "reboot did not take effect")
 }
 
 // hold logs a fatal condition forever. PID 1 must not exit, and rebooting

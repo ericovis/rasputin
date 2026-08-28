@@ -60,3 +60,15 @@
   github.com/insomniacslk/dhcp/dhcpv4/nclient4` was needed separately —
   its linux-only transitive deps (mdlayher/packet, u-root/uio) are invisible
   to a darwin-only `go get`. Real validation is hardware T18.
+
+- 2026-08-28 · T07 · Agent pipelines. internal/agent/pipeline.go (portable):
+  Backoff 2s→60s, Client with injectable Sleep/Now, Probe (HEAD, GET fallback
+  on 405), WaitProbe (0 = forever), Stream (zstd with checksum verification →
+  Target, 4 MiB buffer, progress+Sync every 256 MiB), Upload (zstd POST of
+  exactly N bytes through an io.Pipe), DryrunReport formatting. run.go: the
+  Disk and System interfaces plus Reflash / Dryrun / Capture / RunMode.
+  disk_linux.go binds them to /dev/mmcblk0 and the real reboot; boot_other.go
+  stubs them for darwin. cmd/agent now runs the network modes. 29 unit tests
+  cover the pipeline against httptest, including corrupted and truncated
+  streams, and assert the safety invariant directly: with an unreachable
+  server the card is never opened for writing.
