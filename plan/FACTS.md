@@ -13,12 +13,24 @@ SSH works today as user `ericovis` (the Mac's default user, key
 |-------------|---------------------|----------------|---------|-------|
 | rasputin001 | `b8:27:eb:01:02:03` | 192.168.0.74   | YES     | up; runs podman workloads (owner authorized wiping) |
 | rasputin002 | `b8:27:eb:04:05:06` | 192.168.0.124  | NO      | up    |
-| rasputin003 | `b8:27:eb:07:08:09` | —              | ?       | OFFLINE / unreachable |
+| rasputin003 | `b8:27:eb:07:08:09` | 192.168.0.222  | NO      | UP — but its hostname is `rasputin002` (duplicate) |
 | rasputin004 | `b8:27:eb:0a:0b:0c` | 192.168.0.190  | NO      | up    |
 
 - MAC↔name above is the LIVE cluster state (verified over SSH). The owner once
-  pasted a list implying 002/004 swapped; live state wins. 003's MAC comes from
-  the owner (only MAC not seen live).
+  pasted a list implying 002/004 swapped; live state wins.
+- **Corrected 2026-08-28 (T15): rasputin003 is NOT offline.** It is up at
+  192.168.0.222 (MAC b8:27:eb:07:08:09 verified over SSH), but it reports its
+  hostname as `rasputin002` — the historical duplicate-hostname problem, still
+  present. That is why `rasputin003.local` does not resolve and why the node
+  looked absent during planning. It is only findable through the ARP table.
+  Consequences: mDNS names alone can never be trusted on this cluster (the
+  MAC check in internal/nodes is what caught it), and the identity service
+  baked into the golden image is what permanently fixes it. It also lacks
+  passwordless sudo, like 002 and 004.
+- **The owner's SSH key is passphrase protected** and is used through the
+  macOS SSH agent (SSH_AUTH_SOCK is set, `ssh-add -l` shows the ED25519 key).
+  The CLI therefore authenticates via the agent first and only falls back to
+  reading cfg.ssh.key directly.
 - All nodes: aarch64, Raspberry Pi OS **Trixie** (Debian 13), kernel 6.18.x-rpi-v8,
   boot partition mounted at `/boot/firmware`, 32 GB SD cards (~32,026,656,768 B),
   passwordless-sudo only on 001 (see BLOCKERS).

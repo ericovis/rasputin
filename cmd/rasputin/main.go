@@ -30,7 +30,7 @@ var commands = []command{
 	{"dryrun", "dryrun <node|all>", "validate the download+decode pipeline on a node, harmlessly", false, runDryrun},
 	{"bake", "bake", "produce out/golden.img.zst using the builder node", false, notImplemented},
 	{"flash", "flash <node...|all>", "reflash node(s) from the golden image", false, notImplemented},
-	{"status", "status", "table of node, ip, reachable, hostname, build-id, uptime", false, notImplemented},
+	{"status", "status", "table of node, ip, reachable, hostname, build-id, uptime", false, runStatus},
 	{"serve", "serve", "run the HTTP server standalone (debugging)", false, notImplemented},
 	{"vanilla-fetch", "vanilla-fetch", "download and cache the stock Raspberry Pi OS image", true, runVanillaFetch},
 }

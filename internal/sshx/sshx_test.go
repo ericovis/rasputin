@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/ericovis/rasputin/internal/config"
 	"github.com/ericovis/rasputin/internal/state"
 )
@@ -17,7 +19,7 @@ func dialerFor(t *testing.T, srv *testSSHD, users []string, keys HostKeyStore) *
 	signer, _ := testKey(t)
 	return &Dialer{
 		Users:   users,
-		Signer:  signer,
+		Auth:    []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		Timeout: 3 * time.Second,
 		Keys:    keys,
 		Port:    srv.Port(),
@@ -276,7 +278,7 @@ func TestNewReadsTheConfiguredKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if len(d.Users) != 2 || d.Signer == nil {
+	if len(d.Users) != 2 || len(d.Auth) == 0 {
 		t.Errorf("dialer = %+v", d)
 	}
 	if d.Timeout != DefaultTimeout {
@@ -284,17 +286,53 @@ func TestNewReadsTheConfiguredKey(t *testing.T) {
 	}
 }
 
-func TestNewRejectsABadKey(t *testing.T) {
+func TestNewRejectsABadKeyWhenNoAgentCanHelp(t *testing.T) {
+	// With no agent, an unusable key file leaves nothing to authenticate
+	// with, and the error must say how to fix it.
+	t.Setenv("SSH_AUTH_SOCK", "")
+
 	cfg := &config.Config{SSH: config.SSH{Key: filepath.Join(t.TempDir(), "absent"), Users: []string{"berry"}}}
-	if _, err := New(cfg, nil); err == nil {
-		t.Error("New accepted a missing key")
+	_, err := New(cfg, nil)
+	if err == nil {
+		t.Fatal("New accepted a missing key with no agent")
+	}
+	if !strings.Contains(err.Error(), "ssh-add") {
+		t.Errorf("err = %v, want it to suggest ssh-add", err)
 	}
 
 	bad := filepath.Join(t.TempDir(), "bad")
 	os.WriteFile(bad, []byte("not a key"), 0o600)
 	cfg.SSH.Key = bad
 	if _, err := New(cfg, nil); err == nil {
-		t.Error("New accepted an unparsable key")
+		t.Error("New accepted an unparsable key with no agent")
+	}
+}
+
+func TestNewUsesTheAgentWhenTheKeyFileIsUnusable(t *testing.T) {
+	if os.Getenv("SSH_AUTH_SOCK") == "" {
+		t.Skip("no SSH agent on this machine")
+	}
+	if _, err := AgentSigners(); err != nil {
+		t.Skipf("agent unusable: %v", err)
+	}
+	cfg := &config.Config{SSH: config.SSH{
+		Key:   filepath.Join(t.TempDir(), "does-not-exist"),
+		Users: []string{"berry"},
+	}}
+	d, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("New with only an agent: %v", err)
+	}
+	if len(d.Auth) != 1 {
+		t.Errorf("auth methods = %d, want just the agent", len(d.Auth))
+	}
+}
+
+func TestDialWithNoAuth(t *testing.T) {
+	srv := newTestSSHD(t, "berry")
+	d := &Dialer{Users: []string{"berry"}, Port: srv.Port()}
+	if _, err := d.Dial(context.Background(), "n", "127.0.0.1"); err == nil {
+		t.Error("Dial accepted a dialer with no credentials")
 	}
 }
 

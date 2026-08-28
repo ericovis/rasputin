@@ -35,6 +35,9 @@ const (
 	DryrunLog   = BootMount + "/reflash-dryrun.log"
 )
 
+// AllNodes selects the whole cluster, mirroring nodes.AllKeyword.
+const AllNodes = nodes.AllKeyword
+
 // GoneTimeout is how long to wait for a node to actually go down after a
 // reboot is requested. Waiting for it matters: without it, a reboot that
 // silently failed would look like an instantly successful one.

@@ -65,7 +65,14 @@ type Resolver struct {
 	Log func(format string, args ...any)
 	// PollInterval is how often WaitFor retries; defaults to DefaultPoll.
 	PollInterval time.Duration
+	// DialTimeout bounds each individual candidate address. Without it, one
+	// slow candidate (an mDNS name that no longer resolves, say) can eat the
+	// whole budget and starve the address that would have worked.
+	DialTimeout time.Duration
 }
+
+// DefaultDialTimeout bounds one candidate address.
+const DefaultDialTimeout = 8 * time.Second
 
 // DefaultPoll is how often WaitFor retries a rebooting node. A Pi 3 takes
 // about a minute to boot, so polling faster only adds noise.
@@ -181,9 +188,15 @@ func (r *Resolver) Connect(ctx context.Context, node config.Node) (Conn, error) 
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("%s: no address to try", node.Name)
 	}
+	perDial := r.DialTimeout
+	if perDial <= 0 {
+		perDial = DefaultDialTimeout
+	}
 	var problems []string
 	for _, c := range candidates {
-		conn, err := r.Dial.Dial(ctx, node.Name, c.Host)
+		dialCtx, cancel := context.WithTimeout(ctx, perDial)
+		conn, err := r.Dial.Dial(dialCtx, node.Name, c.Host)
+		cancel()
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("%s (%s): %v", c.Host, c.Source, err))
 			continue

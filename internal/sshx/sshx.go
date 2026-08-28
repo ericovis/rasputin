@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/ericovis/rasputin/internal/config"
 )
@@ -40,8 +41,8 @@ type HostKeyStore interface {
 type Dialer struct {
 	// Users are tried in order until one authenticates.
 	Users []string
-	// Signer is the private key every attempt uses.
-	Signer ssh.Signer
+	// Auth is offered on every attempt, in order.
+	Auth []ssh.AuthMethod
 	// Timeout bounds each dial.
 	Timeout time.Duration
 	// Keys, when set, records and checks host keys.
@@ -50,22 +51,69 @@ type Dialer struct {
 	Port int
 }
 
-// New builds a Dialer from the cluster config, reading the private key once.
+// New builds a Dialer from the cluster config.
+//
+// Two ways in are offered, in this order: the running SSH agent, and the key
+// file itself. The agent comes first because the owner's key is passphrase
+// protected — asking for a passphrase on every one of the dozens of
+// connections a flash makes would be unusable, and the agent already holds
+// the unlocked key.
 func New(cfg *config.Config, keys HostKeyStore) (*Dialer, error) {
-	raw, err := os.ReadFile(cfg.SSH.Key)
-	if err != nil {
-		return nil, fmt.Errorf("reading the SSH key %s: %w", cfg.SSH.Key, err)
+	var (
+		auth     []ssh.AuthMethod
+		problems []string
+	)
+
+	if signers, err := AgentSigners(); err != nil {
+		problems = append(problems, err.Error())
+	} else if len(signers) > 0 {
+		auth = append(auth, ssh.PublicKeysCallback(AgentSigners))
 	}
-	signer, err := ssh.ParsePrivateKey(raw)
-	if err != nil {
-		return nil, fmt.Errorf("parsing the SSH key %s (encrypted keys are not supported): %w", cfg.SSH.Key, err)
+
+	if raw, err := os.ReadFile(cfg.SSH.Key); err != nil {
+		problems = append(problems, fmt.Sprintf("reading %s: %v", cfg.SSH.Key, err))
+	} else if signer, err := ssh.ParsePrivateKey(raw); err != nil {
+		problems = append(problems, fmt.Sprintf("%s: %v", cfg.SSH.Key, err))
+	} else {
+		auth = append(auth, ssh.PublicKeys(signer))
+	}
+
+	if len(auth) == 0 {
+		return nil, fmt.Errorf("no usable SSH credentials:\n  %s\n"+
+			"If the key is passphrase protected, load it into the agent: ssh-add %s",
+			strings.Join(problems, "\n  "), cfg.SSH.Key)
 	}
 	return &Dialer{
 		Users:   append([]string(nil), cfg.SSH.Users...),
-		Signer:  signer,
+		Auth:    auth,
 		Timeout: DefaultTimeout,
 		Keys:    keys,
 	}, nil
+}
+
+// AgentSigners returns the keys held by the running SSH agent, or an error
+// explaining why there are none.
+func AgentSigners() ([]ssh.Signer, error) {
+	sock := os.Getenv("SSH_AUTH_SOCK")
+	if sock == "" {
+		return nil, fmt.Errorf("no SSH agent (SSH_AUTH_SOCK is not set)")
+	}
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to the SSH agent at %s: %w", sock, err)
+	}
+	// The connection is deliberately not closed: ssh.PublicKeysCallback
+	// calls this on every handshake, and each call opens its own.
+	signers, err := agent.NewClient(conn).Signers()
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("listing agent keys: %w", err)
+	}
+	if len(signers) == 0 {
+		conn.Close()
+		return nil, fmt.Errorf("the SSH agent holds no keys (try: ssh-add)")
+	}
+	return signers, nil
 }
 
 // Client is one open connection.
@@ -92,6 +140,9 @@ func (d *Dialer) Dial(ctx context.Context, node, host string) (*Client, error) {
 	if len(d.Users) == 0 {
 		return nil, fmt.Errorf("no SSH users configured")
 	}
+	if len(d.Auth) == 0 {
+		return nil, fmt.Errorf("no SSH credentials configured")
+	}
 	timeout := d.Timeout
 	if timeout == 0 {
 		timeout = DefaultTimeout
@@ -106,7 +157,7 @@ func (d *Dialer) Dial(ctx context.Context, node, host string) (*Client, error) {
 	for _, user := range d.Users {
 		cfg := &ssh.ClientConfig{
 			User:            user,
-			Auth:            []ssh.AuthMethod{ssh.PublicKeys(d.Signer)},
+			Auth:            d.Auth,
 			HostKeyCallback: d.hostKeyCallback(node),
 			Timeout:         timeout,
 		}
