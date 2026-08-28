@@ -124,3 +124,15 @@
   is a static aarch64 ELF inside the cpio, dev/console is char 5:1, all four
   MACs are in nodes.conf, config.txt has no auto_initramfs, cmdline.txt has
   neither an init= hook nor `resize`, and firstrun.sh passes `sh -n`.
+
+- 2026-08-28 · T12 · internal/server: binds the auto-detected LAN address
+  (UDP-dial trick, refuses loopback) on the configured port, serves
+  registered images under /i/<name> while counting bytes per client, and
+  receives captures at POST /capture?id=. Progress is keyed by the node's
+  MAC (header or query) and falls back to its IP. HEAD — the agent's
+  pre-write probe — answers without creating a progress entry. Captures are
+  single-flight per id, streamed to out/incoming-<id>.zst.tmp with a running
+  sha256, and only fsync+renamed into place on a clean EOF, so a truncated
+  upload can never be mistaken for a golden image; a repeat POST after
+  success answers 200 again rather than making the node re-stream. 14 tests,
+  race-clean.
