@@ -3,10 +3,10 @@ package cpio
 import (
 	"bytes"
 	"encoding/hex"
-	"fmt"
 	"io"
 	"os"
-	"strconv"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -50,25 +50,53 @@ func TestRoundTrip(t *testing.T) {
 	if buf.Len()%4 != 0 {
 		t.Fatalf("archive length %d is not 4-byte aligned", buf.Len())
 	}
-	got, err := readAll(bytes.NewReader(buf.Bytes()))
+	got, err := Read(bytes.NewReader(buf.Bytes()))
 	if err != nil {
-		t.Fatalf("read back: %v", err)
+		t.Fatalf("Read: %v", err)
 	}
-	want := []entry{
-		{"dev", modeDir | 0o755, 0, 0, nil},
-		{"dev/console", modeChar | 0o600, 5, 1, nil},
-		{"init", modeFile | 0o755, 0, 0, []byte("hello")},
-		{"etc/empty", modeFile | 0o644, 0, 0, nil},
+	want := []Entry{
+		{Name: "dev", Mode: 0o755, IsDir: true},
+		{Name: "dev/console", Mode: 0o600, IsCharDev: true, Major: 5, Minor: 1},
+		{Name: "init", Mode: 0o755, Data: []byte("hello")},
+		{Name: "etc/empty", Mode: 0o644},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("read %d entries, want %d: %+v", len(got), len(want), got)
 	}
 	for i := range want {
-		if got[i].name != want[i].name || got[i].mode != want[i].mode ||
-			got[i].rmaj != want[i].rmaj || got[i].rmin != want[i].rmin ||
-			!bytes.Equal(got[i].data, want[i].data) {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Errorf("entry %d = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+	if Find(got, "init") == nil || Find(got, "nope") != nil {
+		t.Error("Find did not behave")
+	}
+}
+
+func TestReadRejectsGarbage(t *testing.T) {
+	cases := map[string]string{
+		"truncated":  "0707",
+		"bad magic":  "0707XX" + strings.Repeat("0", 104) + "x\x00\x00\x00",
+		"no trailer": "",
+	}
+	for name, in := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Read(strings.NewReader(in)); err == nil {
+				t.Fatal("want error")
+			}
+		})
+	}
+}
+
+func TestReadRejectsBadHeaderField(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	must(t, w.WriteFile("init", 0o755, []byte("x")))
+	must(t, w.Close())
+	b := buf.Bytes()
+	copy(b[6+6*8:6+7*8], "zzzzzzzz") // filesize field
+	if _, err := Read(bytes.NewReader(b)); err == nil {
+		t.Fatal("want error for a non-hex header field")
 	}
 }
 
@@ -108,79 +136,5 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
-	}
-}
-
-// --- minimal newc reader, used only by these tests --------------------------
-
-type entry struct {
-	name       string
-	mode       uint32
-	rmaj, rmin uint32
-	data       []byte
-}
-
-func readAll(r *bytes.Reader) ([]entry, error) {
-	var out []entry
-	pos := 0
-	read := func(n int) ([]byte, error) {
-		b := make([]byte, n)
-		if _, err := io.ReadFull(r, b); err != nil {
-			return nil, err
-		}
-		pos += n
-		return b, nil
-	}
-	skipPad := func() error {
-		if p := pos % 4; p != 0 {
-			b, err := read(4 - p)
-			if err != nil {
-				return err
-			}
-			for _, c := range b {
-				if c != 0 {
-					return fmt.Errorf("non-NUL padding byte %#x", c)
-				}
-			}
-		}
-		return nil
-	}
-	for {
-		h, err := read(headerSize)
-		if err != nil {
-			return nil, err
-		}
-		if string(h[:6]) != magic {
-			return nil, fmt.Errorf("bad magic %q", h[:6])
-		}
-		field := func(i int) uint32 {
-			v, _ := strconv.ParseUint(string(h[6+i*8:6+(i+1)*8]), 16, 32)
-			return uint32(v)
-		}
-		mode, filesize, rmaj, rmin, namesize := field(1), field(6), field(9), field(10), field(11)
-		nameBuf, err := read(int(namesize))
-		if err != nil {
-			return nil, err
-		}
-		if nameBuf[namesize-1] != 0 {
-			return nil, fmt.Errorf("name %q is not NUL-terminated", nameBuf)
-		}
-		name := string(nameBuf[:namesize-1])
-		if err := skipPad(); err != nil {
-			return nil, err
-		}
-		if name == trailer {
-			return out, nil
-		}
-		var data []byte
-		if filesize > 0 {
-			if data, err = read(int(filesize)); err != nil {
-				return nil, err
-			}
-			if err := skipPad(); err != nil {
-				return nil, err
-			}
-		}
-		out = append(out, entry{name, mode, rmaj, rmin, data})
 	}
 }

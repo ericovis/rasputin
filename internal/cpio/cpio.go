@@ -19,6 +19,8 @@ const (
 	headerSize = 110
 	trailer    = "TRAILER!!!"
 
+	// modeFmt masks off the file-type bits of a mode field.
+	modeFmt  = 0o170000
 	modeDir  = 0o040000
 	modeFile = 0o100000
 	modeChar = 0o020000

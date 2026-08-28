@@ -11,7 +11,7 @@ OUT := out
 
 build:
 	$(GO) build -o $(OUT)/rasputin ./cmd/rasputin
-	$(GO) run ./cmd/mkinitramfs -c rasputin.yaml -o $(OUT)/recovery.gz
+	$(GO) run ./cmd/mkinitramfs -o $(OUT)/recovery.gz
 
 test:
 	$(GO) test ./...

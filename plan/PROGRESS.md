@@ -41,3 +41,12 @@
   exits. SelectMode takes defaultURL as a second argument (the plan's
   one-argument signature cannot express the "no default" error case).
   Design concern about ModeError not booting recorded in BLOCKERS.md.
+
+- 2026-08-28 · T04 · internal/initramfs.Build: cross-compiles ./cmd/agent
+  (CGO off, linux/arm64, -trimpath, -s -w, -X main.defaultURL / main.version),
+  verifies EM_AARCH64 + no PT_INTERP via debug/elf, warns above 12 MiB, packs
+  dev/ + dev/console(c 5:1 0600) + init(0755) with internal/cpio and gzips at
+  BestCompression. Driver is cmd/mkinitramfs (chosen over a CLI flag; the
+  Makefile `build` target calls it). Added an exported cpio.Read/Find so the
+  build can verify its own archive; the T02 test now uses it. Current sizes:
+  agent 1.70 MB, recovery.gz 709 KB — well inside the RAM budget.
