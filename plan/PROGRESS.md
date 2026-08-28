@@ -23,3 +23,10 @@
   reproducible builds, lowercase %08x fields, sticky write errors. Tests:
   byte-exact golden for the dev/console entry from FACTS.md plus a
   round-trip through a minimal in-test newc reader (darwin cpio not used).
+
+- 2026-08-28 · T03 · internal/kmsg (concurrency-safe multi-sink logger,
+  every line prefixed "rasputin: ", errors from sinks swallowed so logging
+  never aborts a reflash; Open() behind linux/!linux build tags) and
+  internal/mbr (Parse/Read/UsedBytes, disk-ID exposed since dd-cloning it is
+  what keeps root=PARTUUID valid, rejects GPT-protective and unsigned
+  sectors). UsedBytes takes the max partition end, not the last entry.
