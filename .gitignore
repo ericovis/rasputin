@@ -1,0 +1,6 @@
+out/
+cache/
+*.img
+*.img.zst
+*.img.xz
+recovery.gz
