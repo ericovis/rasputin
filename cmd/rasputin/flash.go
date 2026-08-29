@@ -13,11 +13,16 @@ import (
 // runFlash reflashes nodes from the golden image, in parallel.
 func runFlash(cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("flash", flag.ContinueOnError)
+	force := fs.Bool("force", false, "reflash a node even when it already runs the golden build")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "usage: rasputin flash <node...|all>\n\n"+
+		fmt.Fprintf(fs.Output(), "usage: rasputin flash [flags] <node...|all>\n\n"+
 			"Reflashes each node from out/golden.img.zst and verifies it comes\n"+
 			"back with the golden build id and its own hostname. Nodes are\n"+
-			"flashed in parallel.\n")
+			"flashed in parallel.\n\n"+
+			"A node already running the golden build is left untouched and\n"+
+			"reported as SKIP; pass -force to reflash it anyway. Flags must\n"+
+			"come before the node list.\n\nflags:\n")
+		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -48,14 +53,18 @@ func runFlash(cfg *config.Config, args []string) error {
 		meta.BuildID, meta.Bytes, srv.URLFor(cluster.GoldenImage.Name))
 	fmt.Printf("flashing %d node(s), timeout %d minutes each\n\n", len(targets), cfg.Timeouts.FlashMinutes)
 
-	results := c.Flash(context.Background(), srv, cluster.GoldenImage, meta, targets)
+	results := c.Flash(context.Background(), srv, cluster.GoldenImage, meta, targets, cluster.FlashOptions{Force: *force})
 
 	fmt.Printf("\n%-14s %-8s %-10s %s\n", "NODE", "RESULT", "TIME", "DETAIL")
 	var failed int
 	for _, r := range results {
 		if r.OK() {
-			fmt.Printf("%-14s %-8s %-10s build %s\n", r.Node, "PASS",
-				r.Duration.Round(time.Second), r.BuildID)
+			verdict, detail := "PASS", "build "+r.BuildID
+			if r.Skipped {
+				verdict, detail = "SKIP", "already on build "+r.BuildID
+			}
+			fmt.Printf("%-14s %-8s %-10s %s\n", r.Node, verdict,
+				r.Duration.Round(time.Second), detail)
 			continue
 		}
 		failed++

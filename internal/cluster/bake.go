@@ -20,7 +20,7 @@ import (
 
 // Bake stages, in order.
 const (
-	provisionPoll  = 20 * time.Second
+	provisionPoll  = 5 * time.Second
 	captureTimeout = 45 * time.Minute
 	sealScriptPath = "/usr/local/sbin/rasputin-seal"
 )
