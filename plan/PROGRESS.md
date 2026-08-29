@@ -330,3 +330,20 @@
   which is the retry-forever design working exactly as intended.
   The poisoned golden.img.zst was deleted; re-bake required (the fixed agent
   also has to be baked in, since recovery.gz ships inside the image).
+
+- 2026-08-29 · T20 · **HW: flash-from-golden PASSED — the production loop is
+  proven and golden images are self-sustaining.** Re-baked first with the
+  capture-flag fix (build 20260829T021418Z-66b2f9, 22m30s, 2,448,792,419 B).
+  | run | result | duration |
+  |-----|--------|----------|
+  | flash rasputin001 (1st) | PASS | **13m7s** |
+  | flash rasputin001 (2nd, repeatability) | PASS | **12m33s** |
+  | dryrun rasputin001 (recovery survived the clone) | PASS | ~5m |
+  Each flash: ~9m downloading 2,335 MiB at ~4.3 MB/s, then SD write + boot.
+  Both flashes verified build_id == golden build_id, hostname == rasputin001
+  (identity service, from the MAC) and systemd running/degraded.
+  The dryrun ran *on a node flashed from golden* and reported
+  `result: OK attempt=1 8589934592 bytes in 4m2s (35.4 MB/s)` — the full
+  8 GiB decoded and checksum-verified, which proves recovery.gz and the
+  config.txt hook are inside the golden image and keep working after a
+  clone. No capture POSTs this time: the flag fix holds.
