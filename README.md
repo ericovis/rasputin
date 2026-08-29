@@ -70,6 +70,25 @@ Requirements: Go 1.27 on the build host, an SSH key that reaches the nodes
 (loaded in your agent if it has a passphrase), and a way to run `sudo` on
 them — the CLI writes to the boot partition and reboots.
 
+### How long it takes
+
+Measured on four Pi 3 B over 100 Mbit ethernet, 2026-08-29:
+
+| command | time |
+|---|---|
+| `prepare` (full, warm cache) | ~15 s |
+| `adopt <node>` | ~45 s |
+| `dryrun <node>` | ~2 min |
+| `bake` | ~16 min (capture ~4 min of it) |
+| `flash <node>` | ~6 min |
+| `flash all` | ~7 min — parallel, and nodes already on the golden build are skipped in ~1 s |
+| `status` | ~2 s |
+
+`flash` skips any node already running the golden build; pass `-force` to
+reflash it anyway. The golden is baked with a small rootfs
+(`image.rootfs_size_gb`, 4 GiB) so captures and flashes stay short, and every
+clone grows its filesystem to the whole card on first boot.
+
 ### sudo
 
 `ssh.sudo` in `rasputin.yaml` picks how the CLI escalates:

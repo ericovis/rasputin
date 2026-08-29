@@ -561,9 +561,53 @@ acceptance: first boot logs `grow: extending the rootfs partition to the whole
 card (32026656768 bytes)` then `grow: rootfs now fills the card; marker
 cleared`; the second boot logs neither (the marker is gone).
 
-- measured (bake #2 total / capture / golden size / card_used_bytes):
-- measured (flash 003 wall):
-- measured (eight node checks — partition bytes, df size, unit lines):
+**MEASURED 2026-08-29 — bake #2 exit 0 in 16m22s; all three PASS.**
+
+Pre-bake sequence executed in order: cap restored to 4 -> full `prepare`
+(12.6 s) -> `rm out/vanilla-custom.img` -> build id
+**`20260829T205033Z-307368`**, `sha256_recovery` `5648bd595e0a…` (fresh).
+
+| PASS | criterion | measured | verdict |
+|---|---|---|---|
+| 1 | `card_used_bytes` == 4,294,967,296 | **4,294,967,296** | **PASS** |
+| 2 | golden ~1.0-1.5 GB | **1,177,967,475 B** | **PASS** |
+| 3 | builder healthy on bake #2's id | `rasputin001, 20260829T205033Z-307368` | **PASS** |
+
+Capture: 4,294,967,296 B in **4m9s = 17.25 MB/s**. Total 16m22s (band 14-16m;
+22 s over, inside the error bar). Phase split from the log: reflash+firstrun+
+provision+seal ~12m, capture 4m9s, verify+return ~1m.
+
+**The 4 GiB golden is slightly LARGER than bake #1's 8 GiB golden**
+(1,177,967,475 vs 1,124,964,220 B) — not a defect, and predicted by the
+zero-fraction analysis in step 2: the 8 GiB capture's extra 4 GiB was a run of
+zeros that compressed to almost nothing, while the 4 GiB cap keeps only dense
+real data. It confirms the withdrawn +/-3% band was measuring the card's
+history, not the build.
+
+**flash rasputin003 (solo, first clean flash measurement of the run): PASS in
+5m40s** — under the 7-10 min band, against a 10m28s-13m18s baseline, i.e.
+about **2x faster**. Download 1,123 MiB at 4.3 MB/s overlapping the
+4,294,967,296 B SD write. Poison check: zero capture POSTs.
+
+**All eight on-node checks PASS on rasputin003:**
+
+| check | result |
+|---|---|
+| `lsblk` p2 | **31,465,668,608 B** of a 32,010,928,128 B card |
+| `df -h /` | **29G total, 2.7G used, 25G avail** (ungrown would be ~3.5G) |
+| `hostname` | `rasputin003` |
+| `/etc/rasputin-release` | `build_id=20260829T205033Z-307368` |
+| `/var/lib/rasputin/provisioned` | **present** |
+| `rasputin-provision.service` this boot | **"-- No entries --"** — no apt re-run |
+| grow log | `grow: extending the rootfs partition to the whole card (32010928128 bytes)` then `grow: rootfs now fills the card; marker cleared`, ~1 s |
+| after `reboot` | `is-system-running` = **running**; **zero** grow lines; rootfs still 29G |
+
+The second-boot check is Lane C's idempotency acceptance and it passes
+outright: the marker is gone, so `identity.sh` never enters `grow_to_card`.
+Note the first-boot grow line is journal-tagged `rasputin001` because the grow
+runs at the top of `identity.sh`, before the hostname is applied — cosmetic
+ordering artifact, not a bug. Timestamps on the node are the no-RTC
+fake-hwclock dates, as always.
 
 ---
 
@@ -597,7 +641,38 @@ This is the conclusive B2 verification.
 4. final `go run ./cmd/rasputin status`: 4 rows, all reachable, all on the
    final build id, correct hostnames.
 
-- measured (skip line verbatim / per-node durations / concurrency / final status):
+**MEASURED 2026-08-29 — `flash all` exit 0, wall 7m13s. All four PASS.**
+
+**PASS 1 — B2 verified conclusively.** The skip line, verbatim, for BOTH
+predicted nodes (P9 called it: the trigger is the build id, not the builder
+name):
+
+```
+rasputin001: already running golden build 20260829T205033Z-307368 — skipping (use -force to reflash anyway)
+rasputin003: already running golden build 20260829T205033Z-307368 — skipping (use -force to reflash anyway)
+```
+
+| node | result | time |
+|---|---|---|
+| rasputin001 | **SKIP** | 0s |
+| rasputin002 | **PASS** | 7m13s |
+| rasputin003 | **SKIP** | 1s |
+| rasputin004 | **PASS** | 5m37s |
+
+**Skipped nodes were never rebooted** — the decisive check: at launch
+(21:16:22Z) 001 was "up 9 minutes" and 003 "up 1 minute"; after the 7-minute
+run they read "up 16 minutes" and "up 8 minutes". Both kept counting straight
+through. A skip costs one SSH round-trip and touches nothing.
+
+**PASS 2** — both flashed nodes verified by `verifyClone` with bake #2's build
+id and their own hostnames. **PASS 3** — 7m13s, inside the 6-10 min band; two
+concurrent flashes at 3.4 + 4.4 = **7.8 MB/s aggregate**, under the ~10 MB/s
+wire ceiling, exactly the <=2 regime T21 measured as free. **PASS 4** — final
+`status`: 4/4 reachable, all on `20260829T205033Z-307368`, correct hostnames.
+Poison check clean across the whole run.
+
+rasputin002 and rasputin004 both grew from the 4 GiB golden to **29G (25G
+avail)**, markers cleared, `provisioned` present, systemd `running`.
 
 ---
 
@@ -676,50 +751,39 @@ concurrent.
 
 ---
 
-## STOP NOTE — where this run halted and how to resume (2026-08-29)
+## COMPLETION NOTE (2026-08-29)
 
-**Halted before Step 4, deliberately.** The owner left mid-run. Steps 4 and 5
-are new destructive operations (bake #2 wipes rasputin001; flash wipes
-rasputin003; `flash all` puts all four in scope) and this file's hard rule is
-that an OWNER GATE needs a fresh, explicit yes naming every node at risk.
-"Resume on auto mode" does not name nodes, so it was not treated as
-authorization. Completing rasputin002 WAS in scope: it was the recovery path
-for an operation the owner had already gated, and leaving a node stranded in
-the recovery agent is strictly worse than finishing it.
+**The runbook ran to completion.** Steps 0-6 all executed; every acceptance
+check that is still valid passed. The owner authorised the remaining
+destructive steps in one instruction ("run until the plan is finished") after
+being told explicitly which nodes each would wipe.
 
-**Cluster state at the stop (all four reachable, MAC-verified):**
+**Final cluster — 4/4 on `20260829T205033Z-307368`, all MAC-verified:**
 
-| node | build | note |
+| node | rootfs | notes |
 |---|---|---|
-| rasputin001 | `20260829T153436Z-d68089` | baked; rootfs at the 8 GiB cap |
-| rasputin002 | `20260829T153436Z-d68089` | flashed clone, grown to the full 32 GB card |
-| rasputin003 | `20260829T021418Z-66b2f9` | untouched, pre-speedup golden |
-| rasputin004 | `20260829T021418Z-66b2f9` | untouched, pre-speedup golden |
+| rasputin001 | 4 GiB cap (builder) | baked; never reflashed by `flash all` (skipped) |
+| rasputin002 | grown to 29G | flashed in the parallel pass |
+| rasputin003 | grown to 29G | flashed solo; reboot-idempotency verified here |
+| rasputin004 | grown to 29G | flashed in the parallel pass |
 
-**Repo state:** `main`, working tree clean. `rasputin.yaml` restored to Lane
-C's merged `rootfs_size_gb: 4`; `git diff rasputin.yaml` is empty.
-`make test` green.
+**Two acceptance criteria were amended by evidence, both recorded above:**
+1. The **+/-3% golden-size band is withdrawn** — it measured the card's
+   history rather than the build, because seal deliberately never zeroes free
+   space. Proven by per-GiB zero-fraction of both decoded goldens.
+2. The **"A2 rate lines visible" check is unsatisfiable** as written — those
+   lines go only to `/dev/kmsg` and every agent boot ends in a reboot that
+   discards the ring buffer. The rate they report is observable through the
+   persisted `result:` line and the bake's capture progress, which is what was
+   used instead.
 
-**READ THIS BEFORE RESUMING (fact F7).** `out/vanilla-custom.img.zst` on disk
-right now was prepared with **cap 8**, while `rasputin.yaml` says **4**. They
-disagree on purpose — the yaml was restored so the tree is clean. Step 4's
-mandatory sequence already fixes it and must not be skipped: set the cap ->
-`go run ./cmd/rasputin prepare` -> `rm out/vanilla-custom.img` -> record the
-new build id -> then bake. Baking without that re-prepare produces a golden at
-the wrong cap whose PASS checks fail on a healthy system.
+**One measurement was lost and not retaken:** bake #1's per-phase breakdown,
+because the command was piped through `tail -80`. Lessons, both now applied:
+never pipe a long hardware operation through `tail` (it withholds output until
+exit), and run such operations **detached** (`fork` + `setsid`; macOS has no
+`setsid` binary) so an agent-session teardown cannot kill the CLI and its HTTP
+server mid-flash, as happened once to rasputin002.
 
-**Still outstanding:**
-- Step 4: bake #2 at 4 GiB (OWNER GATE, wipes rasputin001) + flash rasputin003
-  (OWNER GATE) + the eight node checks including the reboot-idempotency check
-  that was deferred here.
-- Step 5: `flash all` (OWNER GATE covering all four) — the conclusive B2
-  skip-line verification. P9 predicts 001 and 003 skip, 002 and 004 flash.
-- Step 6: FACTS/CLAUDE/README updates, deliberately NOT written yet — the
-  cluster is mid-migration (two nodes per build), so "current truth" docs
-  would be stale within the hour. PROGRESS.md has the history entry.
-- A clean flash wall-time measurement, which this session did not obtain.
-
-**Do not pipe a bake or flash through `tail`** — it withholds all output until
-the process exits and cost this run its phase breakdown. Redirect to a file.
-Better still, run long hardware operations detached from the agent session so
-a teardown cannot kill the HTTP server mid-flash.
+**Rollback assets retained** as required: `out/backup-pre-speedup/` still holds
+the pre-speedup golden (2,448,792,419 B, sha256 `00c2b15a…`, build
+`20260829T021418Z-66b2f9`). Do not delete it in cleanup.

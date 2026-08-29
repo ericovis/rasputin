@@ -626,3 +626,75 @@ is now permanently fixed by the identity service.
   instructions, including the mandatory re-`prepare` (the on-disk
   `vanilla-custom.img.zst` is at cap 8 while the yaml says 4), are in the STOP
   NOTE at the end of `plan/SPEEDUP.md`.
+
+### SPEEDUP, continued — runbook completed
+
+- 2026-08-29 · SPEEDUP · The owner authorised the remaining destructive steps
+  in one instruction after being told which nodes each would wipe, so bake #2,
+  the rasputin003 flash and `flash all` ran back to back without further gates.
+
+- 2026-08-29 · SPEEDUP · **Bake #2 at the 4 GiB cap: 16m22s**, capture
+  4,294,967,296 B in **4m9s @ 17.25 MB/s**, `card_used_bytes` exactly
+  4,294,967,296, golden 1,177,967,475 B, build `20260829T205033Z-307368`.
+
+| run | result | duration |
+|---|---|---|
+| `bake` #2 (4 GiB cap) | PASS, capture 4m9s @ 17.25 MB/s | 16m22s |
+| `flash rasputin003` (solo) | PASS, build verified | 5m40s |
+| `flash all` (002 + 004 flashed, 001 + 003 skipped) | PASS | 7m13s wall |
+| — rasputin002 | PASS | 7m13s |
+| — rasputin004 | PASS | 5m37s |
+| — rasputin001 / rasputin003 | SKIP | 0s / 1s |
+
+- 2026-08-29 · SPEEDUP · **Flash is about twice as fast.** 5m40s solo against a
+  10m28s–13m18s baseline, because the golden now decodes to 4,294,967,296 B
+  instead of 8,589,934,592 B. `flash all` finished in 7m13s with two nodes
+  flashing concurrently at 3.4 + 4.4 = 7.8 MB/s aggregate, under the ~10 MB/s
+  wire ceiling.
+
+- 2026-08-29 · SPEEDUP · **B2's skip verified conclusively.** `flash all`
+  printed, verbatim, for both nodes already on the build:
+  `rasputin001: already running golden build 20260829T205033Z-307368 —
+  skipping (use -force to reflash anyway)`. The decisive check is that a
+  skipped node never reboots: at launch 001 read "up 9 minutes" and 003 "up 1
+  minute", and after the seven-minute run they read "up 16 minutes" and "up 8
+  minutes" — both kept counting. A skip costs one SSH round-trip.
+
+- 2026-08-29 · SPEEDUP · **Lane C accepted on hardware.** Every clone grew from
+  the 4 GiB baked rootfs to the whole card: 003 to 31,465,668,608 B of a
+  32,010,928,128 B card, all three clones reporting 29G with 25G free. The
+  grow logs `grow: extending the rootfs partition to the whole card` then
+  `grow: rootfs now fills the card; marker cleared`, in about a second.
+  `/var/lib/rasputin/provisioned` survived on every clone and
+  `rasputin-provision.service` shows "-- No entries --" on a first boot, so no
+  clone re-ran apt. After a deliberate reboot of 003:
+  `systemctl is-system-running` = `running`, **zero** grow lines, rootfs still
+  29G — the grow is idempotent because the cleared marker is the gate.
+  Cosmetic note: the first-boot grow line is journal-tagged `rasputin001`,
+  since the grow runs at the top of `identity.sh` before the hostname is
+  applied.
+
+- 2026-08-29 · SPEEDUP · **The 4 GiB golden is larger than the 8 GiB one**
+  (1,177,967,475 B vs 1,124,964,220 B). Not a defect — it is the same
+  unzeroed-free-space effect measured earlier: bake #1's extra 4 GiB was a run
+  of trimmed zeros that compressed to nothing, while the 4 GiB cap keeps only
+  dense real data. Two rules now in CLAUDE.md: never gate on the golden's
+  compressed size (gate on `card_used_bytes`, the decode verification and a
+  real clone), and remember the rootfs cap is consumed at `prepare` time, so a
+  yaml edit without a re-`prepare` bakes at the old cap.
+
+- 2026-08-29 · SPEEDUP · Two acceptance criteria from the plan were amended by
+  evidence rather than met: the ±3% golden-size band was withdrawn as unsound,
+  and the "A2 rate lines visible" check was found unsatisfiable — those lines
+  go only to `/dev/kmsg` and every agent boot ends in a reboot that discards
+  the ring buffer, so the rate was verified through the persisted `result:`
+  line and the bake's capture progress instead. Bake #1's per-phase breakdown
+  was lost to a `tail -80` pipe and was not retaken.
+
+- 2026-08-29 · SPEEDUP · **Net result.** `bake` 22m30s → **16m22s**; capture
+  11m3s @ 12.96 MB/s → **4m9s @ 17.25 MB/s** (and 1.54× faster at matched size:
+  7m11s @ 19.93 MB/s over the same 8,589,934,592 B); `flash` 10m28s–13m18s →
+  **5m40s**; golden 2,448,792,419 B → **1,177,967,475 B** over half the card
+  bytes; and a post-bake `flash all` no longer needlessly reflashes the
+  builder, which alone used to cost 10–13 minutes. All four nodes on
+  `20260829T205033Z-307368`.

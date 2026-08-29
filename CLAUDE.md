@@ -23,11 +23,11 @@ still vets and tests on the Mac.
 - `plan/FACTS.md` is ground truth about the cluster; `plan/PROGRESS.md` is
   the full history including every bug and its cause. Update FACTS if you
   discover something there is wrong.
-- Hardware operations are destructive and slow (a flash is ~13 min, a bake
-  ~23 min). Confirm with the owner before wiping a node.
+- Hardware operations are destructive (a flash is ~6 min, a bake ~16 min,
+  both measured 2026-08-29). Confirm with the owner before wiping a node.
 - `bake` needs ~5 GB free on `/`. Disk has run out mid-capture before;
   `out/vanilla-custom.img` (2.9 GB) is a regenerable intermediate and is the
-  first thing to delete.
+  first thing to delete — the runbook deletes it after every `prepare`.
 
 ## Traps that have already bitten
 
@@ -54,6 +54,18 @@ Each of these has a regression test. If you touch the area, run it.
 - **`sudo -k -S`: the `-k` is load-bearing.** It forces sudo to consume
   exactly one stdin line. Without it a cached credential makes sudo skip
   that read, and `Push` would write the password into the file.
+- **The rootfs cap is consumed at `prepare` time, not `bake` time.**
+  `rasputin.yaml` `image.rootfs_size_gb` is templated into `firstrun.sh` and
+  `seal.sh` inside `out/vanilla-custom.img.zst`. Editing the yaml and baking
+  without re-running `prepare` silently bakes at the *old* cap. Always: edit
+  yaml → `prepare` → `rm out/vanilla-custom.img` → `bake`.
+- **Never gate on the golden's compressed size.** `seal` deliberately does not
+  zero free space, so every capture carries whatever stale bytes are on the
+  card and the compressed size tracks the card's history, not the build — a
+  4 GiB golden measured *larger* than an 8 GiB one whose tail happened to be
+  trimmed to zeros. Gate on `card_used_bytes`, the decode verification
+  (`verifyImage` requires the decoded length to equal the partition table's
+  `UsedBytes`) and a real clone.
 - **Never trust a hostname.** This cluster had two nodes answering to
   `rasputin002`. Every connection verifies `/sys/class/net/eth0/address`
   against the config before acting. Do not weaken that.
@@ -61,7 +73,7 @@ Each of these has a regression test. If you touch the area, run it.
 ## The cluster
 
 Four Pi 3s, wired, DHCP on 192.168.0.0/24. All four now run the golden image
-(build `20260829T021418Z-66b2f9`) as user **`berry`** — `ericovis` no longer
+(build `20260829T205033Z-307368`) as user **`berry`** — `ericovis` no longer
 exists on them. MACs are in `rasputin.yaml`; that is the identity that
 matters, not the name or the IP.
 
