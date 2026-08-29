@@ -117,7 +117,7 @@ func (c *Cluster) Adopt(ctx context.Context, node config.Node, opts AdoptOptions
 		return res
 	}
 
-	back, err := c.RebootAndWait(ctx, node, conn, AdoptRebootTimeout)
+	back, err := c.RebootAndWait(ctx, node, conn, RebootOptions{Back: AdoptRebootTimeout})
 	conn = nil // RebootAndWait closed it
 	if err != nil {
 		res.Err = err

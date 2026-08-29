@@ -235,3 +235,22 @@
   rebooted into the normal system. The SD card was never opened for writing.
   Note: the node came back via the ARP candidate (192.168.0.74) because mDNS
   had not re-announced yet — the multi-candidate resolver earned its keep.
+
+- 2026-08-28 · T19 · **First bake attempt FAILED on a real bug, now fixed.**
+  The builder reflashed, provisioned (podman 5.4.2 etc, finished 21:19:10)
+  and grew its rootfs to 7.4 GB correctly — but the CLI then sat in
+  waitProvisioned for 22 minutes without ever reconnecting.
+  Cause: `flash`/`bake` cleared the pinned SSH host key *before* rebooting,
+  but `waitGone` polls the node with Reachable() while it is still up, and
+  the first of those handshakes re-pinned the very key that was about to be
+  destroyed. After the reflash the node presented a new key and every
+  connection was refused as an impersonation (recorded …BKV16gMF vs actual
+  …BNk9rRzz). Fix: RebootAndWait now takes RebootOptions{ReplacesSystem} and
+  drops the pin *after* the node is confirmed down, where nothing can re-pin
+  it; the capture reboot in bake does the same, since sealing deletes the
+  host keys. Regression test TestRebootReplacingSystemClearsTheStaleHostKey
+  reproduces the exact failure (it fails with the old ordering, reporting
+  "host key for rasputin001 changed") and passes with the fix.
+  Lesson worth keeping: any "wait for it to go away" poll is itself a client,
+  and clearing trust before the thing you distrust has actually gone is
+  useless.

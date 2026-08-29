@@ -96,6 +96,12 @@ func (c *Cluster) Bake(ctx context.Context, srv *server.Server) (*BakeResult, er
 		return nil, fmt.Errorf("%s: cannot reboot for the capture: %w", builder.Name, err)
 	}
 	conn.Close()
+	// Sealing deleted the builder's host keys, so it will generate new ones
+	// on the way back. Nothing polls it over SSH during a capture, so this
+	// is safe to drop now.
+	if err := c.State.ForgetHostKey(builder.Name); err != nil {
+		c.Log("%s: could not clear the recorded host key: %v", builder.Name, err)
+	}
 
 	if err := c.awaitCapture(ctx, *builder, srv, captureID, done); err != nil {
 		return nil, err
@@ -156,14 +162,11 @@ func (c *Cluster) bakeReflash(ctx context.Context, srv *server.Server, builder c
 		conn.Close()
 		return fmt.Errorf("%s: writing the reflash flag: %w", builder.Name, err)
 	}
-	if err := c.State.ForgetHostKey(builder.Name); err != nil {
-		c.Log("%s: could not clear the recorded host key: %v", builder.Name, err)
-	}
-
 	// firstrun.sh reboots once more after it finishes, so the first time the
 	// node answers is not necessarily the last reboot.
 	timeout := time.Duration(c.Cfg.Timeouts.BakeMinutes) * time.Minute
-	back, err := c.rebootWatchingProgress(ctx, builder, conn, srv, timeout)
+	back, err := c.rebootWatchingProgress(ctx, builder, conn, srv,
+		RebootOptions{Back: timeout, ReplacesSystem: true})
 	if err != nil {
 		return err
 	}

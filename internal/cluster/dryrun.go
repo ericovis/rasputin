@@ -52,7 +52,7 @@ func (c *Cluster) Dryrun(ctx context.Context, srv *server.Server, img Image, nod
 		return res
 	}
 
-	back, err := c.rebootWatchingProgress(ctx, node, conn, srv, DryrunTimeout)
+	back, err := c.rebootWatchingProgress(ctx, node, conn, srv, RebootOptions{Back: DryrunTimeout})
 	if err != nil {
 		res.Err = err
 		return res
@@ -86,11 +86,11 @@ func (c *Cluster) Dryrun(ctx context.Context, srv *server.Server, img Image, nod
 // rebootWatchingProgress reboots a node and prints its download progress
 // while waiting for it to come back, so a long transfer looks alive rather
 // than hung.
-func (c *Cluster) rebootWatchingProgress(ctx context.Context, node config.Node, conn nodes.Conn, srv *server.Server, timeout time.Duration) (nodes.Conn, error) {
+func (c *Cluster) rebootWatchingProgress(ctx context.Context, node config.Node, conn nodes.Conn, srv *server.Server, opts RebootOptions) (nodes.Conn, error) {
 	watch, stop := context.WithCancel(ctx)
 	defer stop()
 	go c.watchProgress(watch, node, srv)
-	return c.RebootAndWait(ctx, node, conn, timeout)
+	return c.RebootAndWait(ctx, node, conn, opts)
 }
 
 // watchProgress logs a node's transfer every few seconds until cancelled.

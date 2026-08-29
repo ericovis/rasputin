@@ -129,7 +129,7 @@ Status: todo | doing | done | blocked. Edit in place.
 | T16 | hardware gate: preflight + sudo fix check       | 4     | T15         |     | done   |
 | T17 | HW: adopt rasputin001 + reboot-survives check   | 4     | T16         |     | done   |
 | T18 | HW: dryrun on rasputin001                       | 4     | T17         |     | done   |
-| T19 | HW: bake golden on rasputin001                  | 4     | T18         |     | todo   |
+| T19 | HW: bake golden on rasputin001                  | 4     | T18         |     | doing  |
 | T20 | HW: flash rasputin001 from golden, verify       | 4     | T19         |     | todo   |
 | T21 | HW: adopt+flash remaining reachable nodes       | 4     | T20         |     | todo   |
 | T22 | README, cleanup, final end-to-end timing report | 5     | T21         |     | todo   |

@@ -147,10 +147,23 @@ func isDisconnect(err error) bool {
 	return false
 }
 
+// RebootOptions configures RebootAndWait.
+type RebootOptions struct {
+	// Back is how long the node has to return.
+	Back time.Duration
+	// ReplacesSystem says the node will come back as a different install,
+	// with freshly generated SSH host keys. The pinned key must then be
+	// dropped — but only once the node is actually down. Clearing it any
+	// earlier is useless: the polling that watches for the node to go away
+	// opens SSH connections of its own, and the first of those re-pins the
+	// key that is about to be destroyed.
+	ReplacesSystem bool
+}
+
 // RebootAndWait restarts a node and returns a fresh connection once it is
 // back. It first waits for the node to actually go away, so a reboot that
 // never happened is reported as such instead of passing silently.
-func (c *Cluster) RebootAndWait(ctx context.Context, node config.Node, conn nodes.Conn, back time.Duration) (nodes.Conn, error) {
+func (c *Cluster) RebootAndWait(ctx context.Context, node config.Node, conn nodes.Conn, opts RebootOptions) (nodes.Conn, error) {
 	c.Log("%s: rebooting", node.Name)
 	if err := Reboot(conn); err != nil {
 		conn.Close()
@@ -161,8 +174,14 @@ func (c *Cluster) RebootAndWait(ctx context.Context, node config.Node, conn node
 	if err := c.waitGone(ctx, node); err != nil {
 		return nil, err
 	}
-	c.Log("%s: down, waiting for it to come back (up to %s)", node.Name, back)
-	return c.Resolver.WaitFor(ctx, node, back)
+	if opts.ReplacesSystem {
+		// The node is down; nothing can re-pin the old key from here.
+		if err := c.State.ForgetHostKey(node.Name); err != nil {
+			c.Log("%s: could not clear the recorded host key: %v", node.Name, err)
+		}
+	}
+	c.Log("%s: down, waiting for it to come back (up to %s)", node.Name, opts.Back)
+	return c.Resolver.WaitFor(ctx, node, opts.Back)
 }
 
 // waitGone blocks until a node stops answering SSH.

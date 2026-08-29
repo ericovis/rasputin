@@ -102,15 +102,11 @@ func (c *Cluster) flashOne(ctx context.Context, srv *server.Server, img Image, m
 		return res
 	}
 
-	// The node is about to replace its whole filesystem, host keys and all.
-	// Forgetting the recorded key now is what stops the next connection
-	// looking like an impersonation.
-	if err := c.State.ForgetHostKey(node.Name); err != nil {
-		c.Log("%s: could not clear the recorded host key: %v", node.Name, err)
-	}
-
+	// The node is about to replace its whole filesystem, host keys and all;
+	// ReplacesSystem drops the pinned key once it is down.
 	timeout := time.Duration(c.Cfg.Timeouts.FlashMinutes) * time.Minute
-	back, err := c.rebootWatchingProgress(ctx, node, conn, srv, timeout)
+	back, err := c.rebootWatchingProgress(ctx, node, conn, srv,
+		RebootOptions{Back: timeout, ReplacesSystem: true})
 	if err != nil {
 		res.Err = err
 		res.Duration = time.Since(start)
