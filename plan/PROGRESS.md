@@ -286,3 +286,25 @@
   the image's fake-hwclock date (2026-06-17, months stale). The build host's
   timestamp is now templated in as `prepared_at`, with `first_boot_at` kept
   separately for what the node itself observed.
+
+- 2026-08-28 · T19 · **HW: golden image baked — PASSED.** Third attempt, with
+  all four fixes in: `bake` completed in **22m55s** with exit 0 and the
+  builder came back healthy on its own.
+  Phase timings: reflash+firstrun ~6m, provisioning ~4m, seal seconds,
+  capture **11m3s**, builder back + verified ~1m.
+  Artifact: out/golden.img.zst, 2,453,921,771 B compressed from
+  8,589,934,592 B of card (8 GiB exactly — the rootfs cap is precise),
+  sha256 e9167ae9…61efe, build 20260829T011232Z-20880e.
+  Full T19 checklist on the builder, all green: hostname `rasputin001` (set
+  by the identity service from the MAC); **`systemctl is-system-running` =
+  running** (this is the userconfig fix — it was stuck at "starting" forever
+  before); build_id matches golden.json; podman 5.4.2 runs; timezone
+  America/Sao_Paulo; `sudo -n` works as `berry`; userconfig masked;
+  provisioned marker present; 0 failed units; all six packages
+  (podman curl htop vim git tmux) on PATH; recovery.gz (2,702,887 B) present
+  on the boot partition **inside the golden image**, so clones stay
+  reflashable; `ericovis` no longer exists; password SSH auth refused.
+  Cosmetic leftover for T22: sshd still shows the stock "SSH may not work
+  until a valid user has been set up" banner (it comes from sshd's
+  `Banner /run/sshwarn`, not the profile script firstrun removes). It goes to
+  stderr, so it does not affect the CLI's stdout parsing.
