@@ -394,3 +394,107 @@ func TestUploadMultiJobRoundTrip(t *testing.T) {
 		t.Error("multi-job capture stream decoded to different bytes than the source")
 	}
 }
+
+// sizedReader returns n bytes of unspecified content as fast as possible,
+// so multi-GiB write patterns can be exercised without allocating them.
+type sizedReader struct{ n int64 }
+
+func (r *sizedReader) Read(p []byte) (int, error) {
+	if r.n <= 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > r.n {
+		p = p[:r.n]
+	}
+	r.n -= int64(len(p))
+	return len(p), nil
+}
+
+// rangeRecorder is a Target+RangeSyncer that discards writes and records
+// the writeback call pattern.
+type rangeRecorder struct {
+	syncs    int
+	calls    []string
+	awaitErr error
+}
+
+func (r *rangeRecorder) Write(p []byte) (int, error) { return len(p), nil }
+func (r *rangeRecorder) Sync() error                 { r.syncs++; return nil }
+func (r *rangeRecorder) StartWriteback(off, n int64) error {
+	r.calls = append(r.calls, fmt.Sprintf("start %d+%d", off, n))
+	return nil
+}
+func (r *rangeRecorder) AwaitWriteback(off, n int64) error {
+	r.calls = append(r.calls, fmt.Sprintf("await %d+%d", off, n))
+	return r.awaitErr
+}
+
+// plainRecorder is a Target with no RangeSyncer, for the fallback path.
+type plainRecorder struct{ syncs int }
+
+func (p *plainRecorder) Write(b []byte) (int, error) { return len(b), nil }
+func (p *plainRecorder) Sync() error                 { p.syncs++; return nil }
+
+func TestCopyWithProgressPipelinesWriteback(t *testing.T) {
+	c := testClient("http://unused")
+	rec := &rangeRecorder{}
+	const interval = int64(ProgressInterval)
+	n, err := c.copyWithProgress(context.Background(), rec, &sizedReader{n: 3*interval + interval/2})
+	if err != nil {
+		t.Fatalf("copyWithProgress: %v", err)
+	}
+	if want := 3*interval + interval/2; n != want {
+		t.Fatalf("wrote %d bytes, want %d", n, want)
+	}
+	want := []string{
+		fmt.Sprintf("start %d+%d", 0*interval, interval),
+		fmt.Sprintf("start %d+%d", 1*interval, interval),
+		fmt.Sprintf("await %d+%d", 0*interval, interval),
+		fmt.Sprintf("start %d+%d", 2*interval, interval),
+		fmt.Sprintf("await %d+%d", 1*interval, interval),
+	}
+	if !reflect.DeepEqual(rec.calls, want) {
+		t.Errorf("writeback calls = %v, want %v", rec.calls, want)
+	}
+	if rec.syncs != 0 {
+		t.Errorf("copyWithProgress called Sync %d times on a RangeSyncer target; the blocking stall is back", rec.syncs)
+	}
+}
+
+func TestStreamStillSyncsRangeSyncerTargets(t *testing.T) {
+	image := zstdOf(t, bytes.Repeat([]byte("z"), 100000))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(image)
+	}))
+	defer srv.Close()
+
+	rec := &rangeRecorder{}
+	if _, err := testClient(srv.URL).Stream(context.Background(), rec); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if rec.syncs != 1 {
+		t.Errorf("Stream called Sync %d times, want exactly the final durability barrier", rec.syncs)
+	}
+}
+
+func TestCopyWithProgressFallbackStillSyncs(t *testing.T) {
+	c := testClient("http://unused")
+	rec := &plainRecorder{}
+	const interval = int64(ProgressInterval)
+	if _, err := c.copyWithProgress(context.Background(), rec, &sizedReader{n: 2*interval + interval/2}); err != nil {
+		t.Fatalf("copyWithProgress: %v", err)
+	}
+	if rec.syncs != 2 {
+		t.Errorf("periodic syncs = %d, want 2 (dirty pages would grow unbounded on a 1 GB Pi)", rec.syncs)
+	}
+}
+
+func TestCopyWithProgressAwaitErrorFailsAttempt(t *testing.T) {
+	c := testClient("http://unused")
+	rec := &rangeRecorder{awaitErr: fmt.Errorf("card fell out")}
+	const interval = int64(ProgressInterval)
+	_, err := c.copyWithProgress(context.Background(), rec, &sizedReader{n: 3 * interval})
+	if err == nil || !strings.Contains(err.Error(), "awaiting writeback at offset 0") {
+		t.Fatalf("err = %v, want an awaiting-writeback error naming offset 0", err)
+	}
+}

@@ -27,7 +27,7 @@ func (d *sdCard) OpenWrite() (Target, error) {
 		return nil, err
 	}
 	d.f = f
-	return f, nil
+	return syncRangeTarget{f}, nil
 }
 
 // OpenRead opens the card for reading and reports how much of it is in use,
