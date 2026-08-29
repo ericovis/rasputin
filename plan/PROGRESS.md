@@ -347,3 +347,14 @@
   8 GiB decoded and checksum-verified, which proves recovery.gz and the
   config.txt hook are inside the golden image and keep working after a
   clone. No capture POSTs this time: the flag fix holds.
+
+- 2026-08-29 · T21 · **BLOCKED — not a software problem.** rasputin002,
+  rasputin003 and rasputin004 still refuse `sudo -n true` (re-checked
+  00:26). Remote adoption needs passwordless sudo to write the boot
+  partition, and granting it requires typing the account password on each
+  node, which cannot be automated from here. The exact three commands are in
+  BLOCKERS.md along with the follow-up adopt/flash sequence. Everything the
+  blocked work depends on is already proven on rasputin001: adopt, dryrun,
+  bake and flash all pass, and flash is verified repeatable. The parallel
+  multi-node flash exercise also has to wait, since only one node is
+  currently eligible.

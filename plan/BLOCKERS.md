@@ -4,14 +4,35 @@ Format: date, task, description, what was tried, what would unblock it.
 
 ## Open
 
-- 2026-08-28 · T16/T21 · **rasputin002, rasputin003 and rasputin004 lack
+- 2026-08-29 · T21 · **BLOCKED: rasputin002, rasputin003 and rasputin004 lack
   passwordless sudo** for user `ericovis` (`sudo -n true` fails; 003 confirmed
   2026-08-28 at 192.168.0.222). Remote adoption/flash triggering needs it.
   Unblock: the owner runs, on each of the three nodes:
   `echo 'ericovis ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/ericovis`
   (they will be prompted for their password once). Not automatable from here.
-  rasputin001 already has it, so the whole bake path (T16–T20) is unblocked;
-  only T21 — adopting the remaining three — needs this.
+  rasputin001 already has it, so the whole bake path (T16–T20) is DONE;
+  only T21 — adopting and flashing the remaining three — needs this.
+  Re-checked 2026-08-29 00:26: all three still refuse `sudo -n true`.
+
+  **Exact commands for the owner** (each prompts once for the ericovis
+  password; run them from this Mac):
+
+      ssh ericovis@rasputin002.local "echo 'ericovis ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/ericovis"
+      ssh ericovis@192.168.0.222     "echo 'ericovis ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/ericovis"
+      ssh ericovis@rasputin004.local "echo 'ericovis ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/ericovis"
+
+  Note rasputin003 must be reached by IP (192.168.0.222): its hostname is
+  still the duplicate `rasputin002`, so `rasputin003.local` does not resolve.
+  Flashing it is what fixes the name permanently.
+
+  Once done, the rest of T21 is one command per node and needs no further
+  decisions:
+
+      go run ./cmd/rasputin adopt rasputin002 && go run ./cmd/rasputin flash rasputin002
+      go run ./cmd/rasputin adopt rasputin003 && go run ./cmd/rasputin flash rasputin003
+      go run ./cmd/rasputin adopt rasputin004 && go run ./cmd/rasputin flash rasputin004
+      go run ./cmd/rasputin flash rasputin002 rasputin004   # parallel exercise
+      go run ./cmd/rasputin status
 - 2026-08-28 · T21 · ~~rasputin003 is offline~~ — **RESOLVED, was wrong.**
   T15 found it up at 192.168.0.222 with MAC b8:27:eb:07:08:09, reachable over
   SSH as `ericovis`. It does not resolve as `rasputin003.local` because its
