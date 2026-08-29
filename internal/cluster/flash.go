@@ -60,31 +60,41 @@ type FlashResult struct {
 	BuildID  string
 	Hostname string
 	Err      error
+
+	// Skipped is set when the node already ran the golden build and was
+	// left untouched. A skipped node is a success.
+	Skipped bool
 }
 
 // OK reports whether the node came back as a healthy clone.
 func (r FlashResult) OK() bool { return r.Err == nil }
+
+// FlashOptions adjusts how a flash run treats its targets.
+type FlashOptions struct {
+	// Force reflashes a node even when it already runs the golden build.
+	Force bool
+}
 
 // Flash reflashes nodes from the golden image, in parallel.
 //
 // Parallel is safe here in a way adoption is not: each node is independent,
 // the whole point is to rebuild several at once, and a node that fails is
 // left in the recovery agent retrying rather than half-broken.
-func (c *Cluster) Flash(ctx context.Context, srv *server.Server, img Image, meta *GoldenMeta, targets []config.Node) []FlashResult {
+func (c *Cluster) Flash(ctx context.Context, srv *server.Server, img Image, meta *GoldenMeta, targets []config.Node, opts FlashOptions) []FlashResult {
 	results := make([]FlashResult, len(targets))
 	var wg sync.WaitGroup
 	for i, node := range targets {
 		wg.Add(1)
 		go func(i int, node config.Node) {
 			defer wg.Done()
-			results[i] = c.flashOne(ctx, srv, img, meta, node)
+			results[i] = c.flashOne(ctx, srv, img, meta, node, opts)
 		}(i, node)
 	}
 	wg.Wait()
 	return results
 }
 
-func (c *Cluster) flashOne(ctx context.Context, srv *server.Server, img Image, meta *GoldenMeta, node config.Node) FlashResult {
+func (c *Cluster) flashOne(ctx context.Context, srv *server.Server, img Image, meta *GoldenMeta, node config.Node, opts FlashOptions) FlashResult {
 	start := time.Now()
 	res := FlashResult{Node: node.Name}
 
@@ -92,6 +102,27 @@ func (c *Cluster) flashOne(ctx context.Context, srv *server.Server, img Image, m
 	if err != nil {
 		res.Err = err
 		return res
+	}
+
+	// Idempotency guard: a node already running the exact golden build has
+	// nothing to gain from a 13-minute rewrite of an identical card — and a
+	// bake leaves the builder in exactly that state. Any doubt (no marker,
+	// unreadable, malformed) falls through to flashing. This runs only after
+	// Connect verified the MAC, and a skip must leave every piece of
+	// host-key state alone: nothing is replaced, so the pinned key and the
+	// operator's known_hosts stay valid.
+	if !opts.Force && meta != nil && meta.BuildID != "" {
+		release, err := conn.Output("cat " + ReleaseFile + " 2>/dev/null || true")
+		if err == nil {
+			if id := buildIDFrom(release); id != "" && id == meta.BuildID {
+				conn.Close()
+				c.Log("%s: already running golden build %s — skipping (use -force to reflash anyway)", node.Name, id)
+				res.BuildID = id
+				res.Skipped = true
+				res.Duration = time.Since(start)
+				return res
+			}
+		}
 	}
 
 	url := srv.URLFor(img.Name)
