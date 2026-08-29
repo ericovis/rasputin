@@ -308,3 +308,25 @@
   until a valid user has been set up" banner (it comes from sshd's
   `Banner /run/sshwarn`, not the profile script firstrun removes). It goes to
   stderr, so it does not affect the CLI's stdout parsing.
+
+- 2026-08-28 · T20 · **First flash-from-golden FAILED and exposed the worst
+  bug yet: the golden image contained its own capture flag.**
+  The flash itself worked perfectly — 2,453,921,771 B served to
+  b8:27:eb:01:02:03 at ~4.3 MB/s, written and booted. But the node then came
+  up in the recovery agent trying to POST its card back, 88 times, because
+  /boot/firmware/capture was inside the image.
+  Cause (bug 6): the agent removed the capture flag *after* streaming the
+  card — but a capture streams the boot partition too, so the flag was still
+  on disk while being read, and got baked into the golden image. Every node
+  flashed from it would wake up believing it had been told to capture: a
+  self-replicating trap. Fix: clear the flag *before* reading the card, and
+  make failure to clear it fatal — producing no image is better than
+  producing a poisoned one. Regression test
+  TestCaptureClearsItsFlagBeforeReadingTheCard watches the boot partition at
+  the exact moment the card is read; it fails against the old ordering.
+  Recovery: no physical access needed. A throwaway HTTP server on
+  192.168.0.228:8080 accepted the node's capture POST and discarded the body,
+  so the agent got its 200, cleared its own flag and rebooted normally —
+  which is the retry-forever design working exactly as intended.
+  The poisoned golden.img.zst was deleted; re-bake required (the fixed agent
+  also has to be baked in, since recovery.gz ships inside the image).

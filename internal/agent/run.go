@@ -157,15 +157,22 @@ func RunMode(ctx context.Context, mode Mode, c *Client, disk Disk, sys System) e
 		return sys.Reboot()
 
 	case ModeCapture:
-		if err := Capture(ctx, c, disk); err != nil {
-			return err
-		}
+		// The flag must go BEFORE the card is read, not after: a capture
+		// streams the boot partition along with everything else, so a flag
+		// still on disk gets baked into the resulting image, and every node
+		// later flashed from it wakes up believing it has been told to
+		// capture. That is a self-replicating trap, so failing to clear the
+		// flag is fatal — producing a poisoned image is worse than
+		// producing none.
 		if err := sys.WithBoot(func(dir string) error {
 			return removeFlag(dir, FlagCapture)
 		}); err != nil {
-			// Leaving the flag would capture again on the next boot, which
-			// is harmless but confusing, so it is worth shouting about.
-			c.logf("WARNING: could not remove the capture flag: %v", err)
+			return fmt.Errorf("refusing to capture: could not clear the capture flag first, "+
+				"and capturing with it still on the card would poison the image: %w", err)
+		}
+		c.logf("capture flag cleared; reading the card")
+		if err := Capture(ctx, c, disk); err != nil {
+			return err
 		}
 		c.logf("capture complete, rebooting into the normal system")
 		return sys.Reboot()

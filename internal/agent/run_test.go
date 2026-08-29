@@ -226,6 +226,90 @@ func TestCaptureUploadsUsedBytesAndClearsFlag(t *testing.T) {
 	}
 }
 
+// TestCaptureClearsItsFlagBeforeReadingTheCard is the regression test for a
+// self-replicating bug found on hardware: the capture flag was removed only
+// after the card had been streamed, so the flag was still on the boot
+// partition while it was being read — and ended up inside the golden image.
+// Every node flashed from that image then booted, found a capture flag, and
+// tried to upload its own card.
+func TestCaptureClearsItsFlagBeforeReadingTheCard(t *testing.T) {
+	var flagPresentDuringRead bool
+	sys := &fakeSystem{dir: t.TempDir()}
+	flag := filepath.Join(sys.dir, FlagCapture)
+	if err := os.WriteFile(flag, []byte("http://server/capture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	disk := &observingDisk{
+		content: bytes.Repeat([]byte("CARD"), 1000),
+		used:    4000,
+		onRead: func() {
+			_, err := os.Stat(flag)
+			flagPresentDuringRead = err == nil
+		},
+	}
+
+	if err := RunMode(context.Background(), ModeCapture, testClient(srv.URL), disk, sys); err != nil {
+		t.Fatalf("RunMode: %v", err)
+	}
+	if flagPresentDuringRead {
+		t.Error("the capture flag was still on the boot partition while the card was being read; " +
+			"it would be baked into the captured image")
+	}
+	if _, err := os.Stat(flag); !os.IsNotExist(err) {
+		t.Error("the capture flag survived")
+	}
+}
+
+// TestCaptureRefusesWhenTheFlagCannotBeCleared proves the agent would rather
+// produce no image than a poisoned one.
+func TestCaptureRefusesWhenTheFlagCannotBeCleared(t *testing.T) {
+	sys := &fakeSystem{dir: t.TempDir(), bootErr: fmt.Errorf("boot partition is read-only")}
+	disk := &observingDisk{content: []byte("card"), used: 4}
+	err := RunMode(context.Background(), ModeCapture, testClient("http://unused"), disk, sys)
+	if err == nil {
+		t.Fatal("the agent captured without clearing its flag")
+	}
+	if !strings.Contains(err.Error(), "poison") {
+		t.Errorf("err = %v, want it to explain the risk", err)
+	}
+	if disk.reads != 0 {
+		t.Error("the card was read even though the flag could not be cleared")
+	}
+	if sys.reboots != 0 {
+		t.Error("the node rebooted despite refusing to capture")
+	}
+}
+
+// observingDisk reports when its card is read, so a test can inspect the
+// boot partition at that exact moment.
+type observingDisk struct {
+	content []byte
+	used    int64
+	reads   int
+	onRead  func()
+}
+
+func (d *observingDisk) OpenWrite() (Target, error) {
+	return nil, fmt.Errorf("a capture must never open the card for writing")
+}
+
+func (d *observingDisk) OpenRead() (io.ReadCloser, int64, error) {
+	d.reads++
+	if d.onRead != nil {
+		d.onRead()
+	}
+	return io.NopCloser(bytes.NewReader(d.content)), d.used, nil
+}
+
+func (d *observingDisk) Close() error { return nil }
+
 func TestRunModeRejectsNormal(t *testing.T) {
 	err := RunMode(context.Background(), ModeNormal, testClient("http://x"), &fakeDisk{}, &fakeSystem{dir: t.TempDir()})
 	if err == nil {
