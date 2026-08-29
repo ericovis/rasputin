@@ -72,6 +72,22 @@ func (discardTarget) Sync() error                 { return nil }
 // dryrun mode to exercise the whole pipeline without touching the card.
 func DiscardTarget() Target { return discardTarget{} }
 
+// RangeSyncer is optionally implemented by a Target that can start and wait
+// on writeback of byte ranges (sync_file_range(2) on Linux). It lets
+// copyWithProgress flush the just-written range in the background while the
+// next one streams in, instead of stalling both the SD queue and the TCP
+// stream on a full blocking Sync every interval.
+//
+// Range syncs bound dirty pages; they are NOT a durability barrier (they
+// never flush the device cache). The final full Sync in Stream stays, and
+// the reboot must never happen before it.
+type RangeSyncer interface {
+	// StartWriteback begins asynchronous writeback of [off, off+n).
+	StartWriteback(off, n int64) error
+	// AwaitWriteback blocks until writeback of [off, off+n) has completed.
+	AwaitWriteback(off, n int64) error
+}
+
 // Stats describes one completed stream.
 type Stats struct {
 	Bytes    int64
@@ -275,12 +291,20 @@ func (c *Client) Stream(ctx context.Context, dst Target) (Stats, error) {
 	return stats, nil
 }
 
-// copyWithProgress is io.CopyBuffer with periodic logging and a periodic
-// Sync, so a multi-minute write reports progress and does not build up an
-// enormous dirty page cache on a 1 GB Pi.
+// copyWithProgress is io.CopyBuffer with periodic logging and bounded
+// writeback. On a Target that implements RangeSyncer the just-written range
+// is flushed asynchronously while the previous one is barriered, keeping
+// the card continuously fed (write N -> start N -> await N-1); on any other
+// Target it falls back to a blocking Sync per interval. Either way dirty
+// pages on a 1 GB Pi stay bounded: at most the range being written plus the
+// one draining, ~516 MiB worst case at the 256 MiB interval.
 func (c *Client) copyWithProgress(ctx context.Context, dst Target, src io.Reader) (int64, error) {
 	buf := make([]byte, CopyBufferSize)
+	start := c.now()
+	rs, _ := dst.(RangeSyncer)
 	var written, lastReport int64
+	pendingOff := int64(-1) // range with writeback started but not yet awaited
+	var pendingLen int64
 	for {
 		if err := ctx.Err(); err != nil {
 			return written, err
@@ -296,10 +320,25 @@ func (c *Client) copyWithProgress(ctx context.Context, dst Target, src io.Reader
 				return written, fmt.Errorf("short write at offset %d: %d of %d bytes", written, nw, nr)
 			}
 			if written-lastReport >= ProgressInterval {
+				rangeOff, rangeLen := lastReport, written-lastReport
 				lastReport = written
-				c.logf("written %d MiB", written>>20)
-				if err := dst.Sync(); err != nil {
-					return written, fmt.Errorf("sync at offset %d: %w", written, err)
+				c.logf("written %d MiB (%.1f MB/s)", written>>20,
+					Stats{Bytes: written, Duration: c.now().Sub(start)}.Rate()/1e6)
+				switch {
+				case rs != nil:
+					if err := rs.StartWriteback(rangeOff, rangeLen); err != nil {
+						return written, fmt.Errorf("starting writeback at offset %d: %w", rangeOff, err)
+					}
+					if pendingOff >= 0 {
+						if err := rs.AwaitWriteback(pendingOff, pendingLen); err != nil {
+							return written, fmt.Errorf("awaiting writeback at offset %d: %w", pendingOff, err)
+						}
+					}
+					pendingOff, pendingLen = rangeOff, rangeLen
+				default:
+					if err := dst.Sync(); err != nil {
+						return written, fmt.Errorf("sync at offset %d: %w", written, err)
+					}
 				}
 			}
 		}
@@ -312,6 +351,40 @@ func (c *Client) copyWithProgress(ctx context.Context, dst Target, src io.Reader
 	}
 }
 
+// uploadConcurrency bounds the parallel zstd encode of a capture to three
+// workers on the Pi 3's four A53 cores: the fourth core is left for the
+// caller goroutine (SD read + xxhash CRC + memcpy into job buffers) and the
+// HTTP flusher. The bound is also the RAM ceiling — see newUploadEncoder.
+// NEVER pass 0 here: 0 means GOMAXPROCS, which grows the worst-case buffer
+// count, and the agent is /init on a 1 GB Pi where an OOM is a kernel panic
+// that needs a physical power cycle.
+const uploadConcurrency = 3
+
+// newUploadEncoder returns the encoder Upload streams a capture through.
+//
+// WithConcurrentBlocks switches the streaming path from one-block-at-a-time
+// on a single core (measured 12.96 MB/s on an A53) to job-parallel encoding:
+// 32 MiB jobs (4x the 8 MiB SpeedDefault window) with a 1 MiB overlap
+// prefix, flushed in order as a normal single-frame zstd stream.
+//
+// RAM ceiling at concurrency 3 (klauspost/compress v1.19.2): job input
+// buffers can exist in the filling slot (1), the job channel (3), the
+// workers (3), the result channel (3) and the flusher (1) = 11 x 32 MiB
+// = 352 MiB, plus ~64 MiB of in-flight compressed output, ~7 MiB of
+// overlap prefixes and ~60 MiB of encoder window/table state: ~490 MiB
+// absolute worst case, reached only if the network stalls completely (at
+// which point dispatch blocks and, with all buffers pooled, allocation
+// stops). Steady state is far lower (~200 MiB): the SD read at ~20-23 MB/s
+// is slower than three workers' ~39 MB/s aggregate, so the queues run
+// empty. Both fit a 1 GB Pi with >350 MiB headroom.
+func newUploadEncoder(w io.Writer) (*zstd.Encoder, error) {
+	return zstd.NewWriter(w,
+		zstd.WithEncoderLevel(zstd.SpeedDefault),
+		zstd.WithEncoderCRC(true),
+		zstd.WithEncoderConcurrency(uploadConcurrency),
+		zstd.WithConcurrentBlocks(true))
+}
+
 // Upload streams size bytes from src to the CLI as a zstd-compressed POST.
 // This is the capture path: the card is only ever read, so failures are
 // harmless and retried by the caller.
@@ -321,9 +394,7 @@ func (c *Client) Upload(ctx context.Context, src io.Reader, size int64) (Stats, 
 	counted := &countingReader{r: io.LimitReader(src, size)}
 
 	go func() {
-		enc, err := zstd.NewWriter(pw,
-			zstd.WithEncoderLevel(zstd.SpeedDefault),
-			zstd.WithEncoderCRC(true))
+		enc, err := newUploadEncoder(pw)
 		if err != nil {
 			pw.CloseWithError(err)
 			return
