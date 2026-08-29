@@ -3,10 +3,12 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -315,5 +317,80 @@ func TestStatsRate(t *testing.T) {
 	}
 	if got := (Stats{Bytes: 1000, Duration: 2 * time.Second}).Rate(); got != 500 {
 		t.Errorf("Rate = %v, want 500", got)
+	}
+}
+
+// TestUploadEncoderIsParallel pins the capture encoder's concurrency options.
+// It reads unexported fields of the v1.19.2 zstd.Encoder; if the pinned
+// library version changes, update the field names here.
+func TestUploadEncoderIsParallel(t *testing.T) {
+	enc, err := newUploadEncoder(io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enc.Close()
+	o := reflect.ValueOf(enc).Elem().FieldByName("o")
+	if !o.IsValid() {
+		t.Fatal("zstd.Encoder no longer has field o; library layout changed")
+	}
+	if !o.FieldByName("concurrentBlocks").Bool() {
+		t.Error("capture encoder does not have concurrent blocks enabled; capture will encode on one core at ~13 MB/s")
+	}
+	if got := o.FieldByName("concurrent").Int(); got != 3 {
+		t.Errorf("capture encoder concurrency = %d, want exactly 3 (RAM budget on a 1 GB Pi)", got)
+	}
+}
+
+// patternReader yields 4 KiB runs of a slowly-varying byte: compressible
+// enough that a 100 MiB encode is fast, non-constant enough to be honest.
+type patternReader struct{ off int64 }
+
+func (p *patternReader) Read(b []byte) (int, error) {
+	for i := range b {
+		b[i] = byte((p.off + int64(i)) >> 12)
+	}
+	p.off += int64(len(b))
+	return len(b), nil
+}
+
+func TestUploadMultiJobRoundTrip(t *testing.T) {
+	const size = 100 << 20 // > 3x the 32 MiB parallel job size
+
+	want := sha256.New()
+	if _, err := io.CopyN(want, &patternReader{}, size); err != nil {
+		t.Fatal(err)
+	}
+
+	got := sha256.New()
+	var received int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dec, err := zstd.NewReader(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		defer dec.Close()
+		n, err := io.Copy(got, dec.IOReadCloser())
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		received = n
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	stats, err := testClient(srv.URL+"/capture").Upload(context.Background(), &patternReader{}, size)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if stats.Bytes != size {
+		t.Errorf("stats.Bytes = %d, want %d", stats.Bytes, size)
+	}
+	if received != size {
+		t.Errorf("server decoded %d bytes, want %d", received, size)
+	}
+	if !bytes.Equal(got.Sum(nil), want.Sum(nil)) {
+		t.Error("multi-job capture stream decoded to different bytes than the source")
 	}
 }

@@ -312,6 +312,40 @@ func (c *Client) copyWithProgress(ctx context.Context, dst Target, src io.Reader
 	}
 }
 
+// uploadConcurrency bounds the parallel zstd encode of a capture to three
+// workers on the Pi 3's four A53 cores: the fourth core is left for the
+// caller goroutine (SD read + xxhash CRC + memcpy into job buffers) and the
+// HTTP flusher. The bound is also the RAM ceiling — see newUploadEncoder.
+// NEVER pass 0 here: 0 means GOMAXPROCS, which grows the worst-case buffer
+// count, and the agent is /init on a 1 GB Pi where an OOM is a kernel panic
+// that needs a physical power cycle.
+const uploadConcurrency = 3
+
+// newUploadEncoder returns the encoder Upload streams a capture through.
+//
+// WithConcurrentBlocks switches the streaming path from one-block-at-a-time
+// on a single core (measured 12.96 MB/s on an A53) to job-parallel encoding:
+// 32 MiB jobs (4x the 8 MiB SpeedDefault window) with a 1 MiB overlap
+// prefix, flushed in order as a normal single-frame zstd stream.
+//
+// RAM ceiling at concurrency 3 (klauspost/compress v1.19.2): job input
+// buffers can exist in the filling slot (1), the job channel (3), the
+// workers (3), the result channel (3) and the flusher (1) = 11 x 32 MiB
+// = 352 MiB, plus ~64 MiB of in-flight compressed output, ~7 MiB of
+// overlap prefixes and ~60 MiB of encoder window/table state: ~490 MiB
+// absolute worst case, reached only if the network stalls completely (at
+// which point dispatch blocks and, with all buffers pooled, allocation
+// stops). Steady state is far lower (~200 MiB): the SD read at ~20-23 MB/s
+// is slower than three workers' ~39 MB/s aggregate, so the queues run
+// empty. Both fit a 1 GB Pi with >350 MiB headroom.
+func newUploadEncoder(w io.Writer) (*zstd.Encoder, error) {
+	return zstd.NewWriter(w,
+		zstd.WithEncoderLevel(zstd.SpeedDefault),
+		zstd.WithEncoderCRC(true),
+		zstd.WithEncoderConcurrency(uploadConcurrency),
+		zstd.WithConcurrentBlocks(true))
+}
+
 // Upload streams size bytes from src to the CLI as a zstd-compressed POST.
 // This is the capture path: the card is only ever read, so failures are
 // harmless and retried by the caller.
@@ -321,9 +355,7 @@ func (c *Client) Upload(ctx context.Context, src io.Reader, size int64) (Stats, 
 	counted := &countingReader{r: io.LimitReader(src, size)}
 
 	go func() {
-		enc, err := zstd.NewWriter(pw,
-			zstd.WithEncoderLevel(zstd.SpeedDefault),
-			zstd.WithEncoderCRC(true))
+		enc, err := newUploadEncoder(pw)
 		if err != nil {
 			pw.CloseWithError(err)
 			return
