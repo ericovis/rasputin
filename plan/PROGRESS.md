@@ -372,7 +372,8 @@
 
 ## Final summary
 
-**Status: 21 of 22 tasks done. T21 blocked on an owner action, not on code.**
+**Status: superseded — see "Final summary (complete)" at the end. All 22
+tasks are done.**
 
 | phase | tasks | outcome |
 |-------|-------|---------|
@@ -485,3 +486,55 @@ duplicate hostname `rasputin002`; flashing it fixes that permanently.
   Final state: all four nodes on build 20260829T021418Z-66b2f9, all
   provisioned, all reachable as `berry`, each with the correct per-MAC
   hostname.
+
+## Final summary (complete)
+
+**Status: 22 of 22 tasks done. No open blockers. The whole cluster runs the
+golden image.**
+
+| phase | tasks | outcome |
+|-------|-------|---------|
+| 0 foundation | T01–T04 | done |
+| 1 agent | T05–T07 | done |
+| 2 image | T08–T11 | done |
+| 3 orchestration | T12–T15 | done |
+| 4 hardware | T16–T21 | **done on all four nodes** |
+| 5 docs | T22 | done |
+
+**Measured on real hardware (Raspberry Pi 3, 100 Mbit LAN):**
+
+| operation | duration |
+|-----------|----------|
+| `adopt <node>` | 40–55 s |
+| `dryrun <node>` | 2m23s (2.98 GB decoded at 40.6 MB/s) |
+| `bake` | 22m30s |
+| `flash <node>` | 10m28s – 13m18s (five runs across four nodes) |
+| `flash a b` (parallel) | 12m48s / 10m29s — same per-node speed as one alone |
+| `status` (4 nodes) | 8 s |
+
+A `flash all` costs roughly what a single node costs: the SD write is the
+bottleneck, not the server or the network.
+
+**Six bugs found and fixed, each with a regression test that fails against
+the old code.** Five were only findable on hardware: SSH agent auth for a
+passphrase-protected key; a shared dial budget starving the ARP candidate;
+the host-key pin cleared before rather than after the node went down; a
+health check sampling systemd before it had finished booting;
+`userconfig.service` blocking multi-user.target forever on a headless node;
+and the capture flag being baked into the golden image so every clone tried
+to capture itself.
+
+**Two long-standing cluster facts corrected:** rasputin003 was never offline
+— it was up all along under the duplicate hostname `rasputin002`, invisible
+to mDNS — and the Trixie image expands its rootfs from a bare `resize`
+cmdline token, not the `init=` hook the plan assumed. The duplicate hostname
+is now permanently fixed by the identity service.
+
+**Suggested next steps:**
+- Zeroing free space before capture would shrink the golden image below
+  2.4 GB and cut flash time, at the cost of writing ~5 GB to the builder each
+  bake. Deliberately not done.
+- The stock `Banner /run/sshwarn` nag survives on flashed nodes (cosmetic,
+  stderr only, does not affect the CLI's parsing).
+- An in-agent debug HTTP endpoint would make a node stuck in recovery
+  inspectable without a console.
