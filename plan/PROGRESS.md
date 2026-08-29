@@ -189,3 +189,19 @@
      check did exactly its job here: nothing mistook it for rasputin002.
   `rasputin status` against the live cluster now prints 4 rows, all four
   reachable and MAC-verified, and modifies nothing.
+
+- 2026-08-28 · T16 · **Hardware gate PASSED. The hardware phase begins;
+  rasputin001 will be wiped (owner pre-authorized, including its podman
+  workloads), and the owner re-confirmed "go ahead" in session.**
+  Eligibility (eligible = reachable + passwordless sudo):
+  | node        | reachable | sudo -n | eligible |
+  |-------------|-----------|---------|----------|
+  | rasputin001 | yes (mDNS)          | YES | **yes** — builder/guinea |
+  | rasputin002 | yes (mDNS)          | no  | no |
+  | rasputin003 | yes (ARP, .0.222)   | no  | no |
+  | rasputin004 | yes (mDNS)          | no  | no |
+  rasputin001 alone is enough for T17–T20. T21 stays blocked on the owner's
+  sudo command for the other three (see BLOCKERS). rasputin003 is NOT
+  offline — that blocker was wrong and is now marked resolved.
+  out/vanilla-custom.img.zst rebuilt today (735,551,527 B) and the T11
+  image-content gate re-run and passing.

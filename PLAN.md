@@ -126,7 +126,7 @@ Status: todo | doing | done | blocked. Edit in place.
 | T13 | SSH client + node resolution + state cache      | 3     | T01         | [P]B| done   |
 | T14 | `adopt`, `dryrun` commands                      | 3     | T11,T12,T13 |     | done   |
 | T15 | `flash`, `bake`, `status` commands              | 3     | T14         |     | done   |
-| T16 | hardware gate: preflight + sudo fix check       | 4     | T15         |     | todo   |
+| T16 | hardware gate: preflight + sudo fix check       | 4     | T15         |     | done   |
 | T17 | HW: adopt rasputin001 + reboot-survives check   | 4     | T16         |     | todo   |
 | T18 | HW: dryrun on rasputin001                       | 4     | T17         |     | todo   |
 | T19 | HW: bake golden on rasputin001                  | 4     | T18         |     | todo   |
