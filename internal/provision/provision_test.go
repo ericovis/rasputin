@@ -1,9 +1,11 @@
 package provision
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -49,7 +51,8 @@ func TestRenderProducesEveryFile(t *testing.T) {
 }
 
 func TestFirstrunContent(t *testing.T) {
-	files, err := Render(repoData(t))
+	d := repoData(t)
+	files, err := Render(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +60,7 @@ func TestFirstrunContent(t *testing.T) {
 	for _, want := range []string{
 		"useradd -m -s /bin/bash \"$USER_NAME\"",
 		"USER_NAME=berry",
-		"ROOTFS_CAP_GB=8",
+		fmt.Sprintf("ROOTFS_CAP_GB=%d", d.RootfsSizeGB),
 		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5",
 		"/etc/sudoers.d/010-rasputin",
 		"visudo -c",
@@ -109,6 +112,10 @@ func TestIdentityContent(t *testing.T) {
 		"ssh-keygen -A",
 		"rasputin-unknown-",
 		"exit 0",
+		"GROW_MARKER=\"${RASPUTIN_GROW_MARKER:-/var/lib/rasputin/grow-rootfs}\"",
+		"sfdisk --no-reread -N 2",
+		"resize2fs",
+		"rm -f \"$GROW_MARKER\"",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rasputin-identity is missing %q", want)
@@ -154,7 +161,8 @@ func TestProvisionServiceContent(t *testing.T) {
 }
 
 func TestSealContent(t *testing.T) {
-	files, err := Render(repoData(t))
+	d := repoData(t)
+	files, err := Render(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,10 +172,19 @@ func TestSealContent(t *testing.T) {
 		": > /etc/machine-id",
 		"/var/lib/dbus/machine-id",
 		"journalctl --vacuum-time=1s",
+		"df -Pk /",
+		"exit 1",
+		": > /var/lib/rasputin/grow-rootfs",
+		fmt.Sprintf("ROOTFS_CAP_GB=%d", d.RootfsSizeGB),
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rasputin-seal is missing %q", want)
 		}
+	}
+	// The fit guard exists to abort a bake before the builder is stripped, so
+	// an abort leaves a fully provisioned, reachable node behind.
+	if g, r := strings.Index(got, "df -Pk /"), strings.Index(got, "rm -f /etc/ssh/ssh_host_"); g < 0 || r < 0 || g > r {
+		t.Error("the fit guard must run before seal strips anything (df guard not found before the host-key removal)")
 	}
 	// Removing the provisioning marker would make every clone re-run apt on
 	// first boot, which the golden image exists precisely to avoid.
@@ -231,5 +248,136 @@ func TestPackageList(t *testing.T) {
 	d := Data{Packages: []string{"podman", "curl"}}
 	if got := d.PackageList(); got != "podman curl" {
 		t.Errorf("PackageList = %q", got)
+	}
+}
+
+// renderIdentity renders the identity script to an executable file.
+func renderIdentity(t *testing.T) string {
+	t.Helper()
+	files, err := Render(repoData(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), IdentityFile)
+	if err := os.WriteFile(path, files[IdentityFile], 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// fakeTools builds a bin dir of stub sfdisk/resize2fs/blockdev/partx that
+// append their invocation (and stdin, for sfdisk) to a witness file.
+// blockdev records itself too: it is the first tool the grow calls, so the
+// no-marker test can detect an ungated grow even if later steps bail out.
+// resize2fsExit lets one test simulate a failed online resize.
+func fakeTools(t *testing.T, witness string, resize2fsExit int) string {
+	t.Helper()
+	bin := t.TempDir()
+	stubs := map[string]string{
+		"blockdev":  "echo \"blockdev $*\" >> \"$W\"\necho 32026656768\n",
+		"sfdisk":    "in=$(cat)\necho \"sfdisk $* <<$in>>\" >> \"$W\"\n",
+		"partx":     "echo \"partx $*\" >> \"$W\"\n",
+		"partprobe": "echo \"partprobe $*\" >> \"$W\"\n",
+		"resize2fs": fmt.Sprintf("echo \"resize2fs $*\" >> \"$W\"\nexit %d\n", resize2fsExit),
+	}
+	for name, body := range stubs {
+		script := "#!/bin/sh\nW='" + witness + "'\n" + body
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return bin
+}
+
+// growSysDir writes the sysfs stand-ins for /sys/block/mmcblk0/mmcblk0p2:
+// p2 starts at sector 1056768 and is currently smaller than the 32 GB card
+// (32,026,656,768 B, plan/FACTS.md), so an attempted grow must reach sfdisk.
+func growSysDir(t *testing.T, dir string) string {
+	t.Helper()
+	sys := filepath.Join(dir, "sys")
+	if err := os.MkdirAll(sys, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sys, "start"), []byte("1056768\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sys, "size"), []byte("7331840\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return sys
+}
+
+// runIdentity executes the script with the grow inputs pointed at the sandbox.
+func runIdentity(t *testing.T, script, bin, marker, sysDir string) {
+	t.Helper()
+	if runtime.GOOS != "darwin" {
+		t.Skip("identity script execution is sandboxed only on darwin (no /sys/class/net/eth0)")
+	}
+	cmd := exec.Command("sh", script)
+	cmd.Env = append(os.Environ(),
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"RASPUTIN_GROW_MARKER="+marker,
+		"RASPUTIN_GROW_DISK="+filepath.Join(filepath.Dir(marker), "disk"),
+		"RASPUTIN_GROW_SYS="+sysDir,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("identity exited non-zero: %v\n%s", err, out)
+	}
+}
+
+func TestIdentityGrowIsGatedByTheMarker(t *testing.T) {
+	dir := t.TempDir()
+	witness := filepath.Join(dir, "witness")
+	bin := fakeTools(t, witness, 0)
+	sys := growSysDir(t, dir)
+	// No marker, but everything else primed for a grow: if the gate were
+	// missing, blockdev (and then sfdisk) would write the witness.
+	runIdentity(t, renderIdentity(t), bin, filepath.Join(dir, "absent-marker"), sys)
+	if _, err := os.Stat(witness); !os.IsNotExist(err) {
+		data, _ := os.ReadFile(witness)
+		t.Errorf("without the marker the grow ran tools:\n%s", data)
+	}
+}
+
+func TestIdentityGrowRunsOnceWithMarker(t *testing.T) {
+	dir := t.TempDir()
+	witness := filepath.Join(dir, "witness")
+	bin := fakeTools(t, witness, 0)
+	marker := filepath.Join(dir, "grow-rootfs")
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sys := growSysDir(t, dir)
+	runIdentity(t, renderIdentity(t), bin, marker, sys)
+
+	data, err := os.ReadFile(witness)
+	if err != nil {
+		t.Fatalf("the grow ran no tools: %v", err)
+	}
+	got := string(data)
+	// want_sectors = 32026656768/512 - 1056768 = 61495296
+	for _, want := range []string{"blockdev --getsize64", "sfdisk --no-reread -N 2", ",61495296", "resize2fs"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("grow tool trace is missing %q:\n%s", want, got)
+		}
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Error("the marker survived a successful grow; the grow would re-run every boot")
+	}
+}
+
+func TestIdentityGrowKeepsMarkerWhenResizeFails(t *testing.T) {
+	dir := t.TempDir()
+	witness := filepath.Join(dir, "witness")
+	bin := fakeTools(t, witness, 1) // resize2fs fails
+	marker := filepath.Join(dir, "grow-rootfs")
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sys := growSysDir(t, dir)
+	// Must still exit 0: the identity service may never block a boot.
+	runIdentity(t, renderIdentity(t), bin, marker, sys)
+	if _, err := os.Stat(marker); err != nil {
+		t.Error("the marker was cleared even though resize2fs failed; the grow would never retry")
 	}
 }

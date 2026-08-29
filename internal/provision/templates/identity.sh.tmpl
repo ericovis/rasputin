@@ -20,6 +20,48 @@ log() {
     echo "rasputin: $*"
 }
 
+# --- one-shot rootfs grow on a freshly flashed clone -------------------------
+# The golden image is baked with a small rootfs (rasputin.yaml
+# image.rootfs_size_gb) so captures and flashes stay short. rasputin-seal
+# drops this marker immediately before the capture, so every clone — and the
+# builder itself, on its first boot after the capture — grows the root
+# filesystem to the whole card exactly once, then clears the marker. This can
+# never inflate a future golden image: a bake always reflashes the builder
+# from the vanilla image first, which resets the partition table, and the
+# marker only ever appears after seal, when the capture is already armed.
+# On any failure the marker is kept so the grow retries on the next boot;
+# a node that boots small can be fixed over SSH, one that does not boot
+# cannot, so nothing here may block the boot.
+GROW_MARKER="${RASPUTIN_GROW_MARKER:-/var/lib/rasputin/grow-rootfs}"
+GROW_DISK="${RASPUTIN_GROW_DISK:-/dev/mmcblk0}"
+GROW_SYS="${RASPUTIN_GROW_SYS:-/sys/block/mmcblk0/mmcblk0p2}"
+
+grow_to_card() {
+    card_bytes=$(blockdev --getsize64 "$GROW_DISK" 2>/dev/null || echo 0)
+    [ "$card_bytes" -gt 0 ] 2>/dev/null || \
+        { log "grow: cannot read the card size; leaving the marker for the next boot"; return 0; }
+    start=$(cat "$GROW_SYS/start" 2>/dev/null || echo 0)
+    [ "$start" -gt 0 ] 2>/dev/null || \
+        { log "grow: cannot find the rootfs start sector; leaving the marker for the next boot"; return 0; }
+    want_sectors=$((card_bytes / 512 - start))
+    have_sectors=$(cat "$GROW_SYS/size" 2>/dev/null || echo 0)
+    if [ "$have_sectors" -ge "$want_sectors" ]; then
+        log "grow: rootfs partition already fills the card"
+    else
+        log "grow: extending the rootfs partition to the whole card ($card_bytes bytes)"
+        printf ',%s\n' "$want_sectors" | sfdisk --no-reread -N 2 "$GROW_DISK" || \
+            { log "grow: sfdisk failed; leaving the marker for the next boot"; return 0; }
+        partx -u "$GROW_DISK" 2>/dev/null || partprobe "$GROW_DISK" 2>/dev/null || true
+    fi
+    resize2fs "${GROW_DISK}p2" || \
+        { log "grow: resize2fs failed; leaving the marker for the next boot"; return 0; }
+    rm -f "$GROW_MARKER"
+    log "grow: rootfs now fills the card; marker cleared"
+}
+if [ -f "$GROW_MARKER" ]; then
+    grow_to_card
+fi
+
 mac=$(cat /sys/class/net/eth0/address 2>/dev/null || echo "")
 if [ -z "$mac" ]; then
     log "identity: eth0 has no MAC address; leaving the hostname alone"

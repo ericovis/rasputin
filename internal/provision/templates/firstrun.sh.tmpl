@@ -31,7 +31,9 @@ log "firstrun starting on $(uname -n)"
 
 # --- grow the root filesystem to the configured cap --------------------------
 # Not to the whole card: a capture streams the used prefix of the disk, and a
-# 32 GB rootfs would mean a 32 GB golden image.
+# 32 GB rootfs would mean a 32 GB golden image. Clones DO get the whole card:
+# rasputin-identity grows them on first boot, gated by the marker rasputin-seal
+# leaves at /var/lib/rasputin/grow-rootfs just before capture.
 grow_rootfs() {
     disk=/dev/mmcblk0
     part=2
