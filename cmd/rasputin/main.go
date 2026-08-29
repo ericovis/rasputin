@@ -15,21 +15,17 @@ type command struct {
 	name  string
 	usage string
 	short string
-	// hidden keeps a command out of the help text. Used for build-time
-	// helpers that are not part of the operator-facing surface.
-	hidden bool
-	run    func(cfg *config.Config, args []string) error
+	run   func(cfg *config.Config, args []string) error
 }
 
 var commands = []command{
-	{"prepare", "prepare", "build recovery.gz + vanilla image with custom boot partition", false, runPrepare},
-	{"adopt", "adopt <node|all>", "install the recovery mechanism on a live node via SSH", false, runAdopt},
-	{"dryrun", "dryrun <node|all>", "validate the download+decode pipeline on a node, harmlessly", false, runDryrun},
-	{"bake", "bake", "produce out/golden.img.zst using the builder node", false, runBake},
-	{"flash", "flash <node...|all>", "reflash node(s) from the golden image", false, runFlash},
-	{"status", "status", "table of node, ip, reachable, hostname, build-id, uptime", false, runStatus},
-	{"serve", "serve", "run the HTTP server standalone (debugging)", false, runServe},
-	{"vanilla-fetch", "vanilla-fetch", "download and cache the stock Raspberry Pi OS image", true, runVanillaFetch},
+	{"prepare", "prepare", "build recovery.gz + vanilla image with custom boot partition", runPrepare},
+	{"adopt", "adopt <node|all>", "install the recovery mechanism on a live node via SSH", runAdopt},
+	{"dryrun", "dryrun <node|all>", "validate the download+decode pipeline on a node, harmlessly", runDryrun},
+	{"bake", "bake", "produce out/golden.img.zst using the builder node", runBake},
+	{"flash", "flash <node...|all>", "reflash node(s) from the golden image", runFlash},
+	{"status", "status", "table of node, ip, reachable, hostname, build-id, uptime", runStatus},
+	{"serve", "serve", "run the HTTP server standalone (debugging)", runServe},
 }
 
 func main() {
@@ -83,9 +79,6 @@ func lookup(name string) *command {
 func usage(w io.Writer) {
 	fmt.Fprintf(w, "usage: rasputin [-c rasputin.yaml] <command> [args]\n\ncommands:\n")
 	for _, c := range commands {
-		if c.hidden {
-			continue
-		}
 		fmt.Fprintf(w, "  %-20s %s\n", c.usage, c.short)
 	}
 }

@@ -132,7 +132,7 @@ Status: todo | doing | done | blocked. Edit in place.
 | T19 | HW: bake golden on rasputin001                  | 4     | T18         |     | done   |
 | T20 | HW: flash rasputin001 from golden, verify       | 4     | T19         |     | done   |
 | T21 | HW: adopt+flash remaining reachable nodes       | 4     | T20         |     | blocked|
-| T22 | README, cleanup, final end-to-end timing report | 5     | T21         |     | todo   |
+| T22 | README, cleanup, final end-to-end timing report | 5     | T21         |     | done   |
 
 Task details: `plan/00-foundation.md` (T01–T04), `plan/01-agent.md` (T05–T07),
 `plan/02-image.md` (T08–T11), `plan/03-orchestration.md` (T12–T15),

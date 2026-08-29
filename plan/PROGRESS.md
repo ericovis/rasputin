@@ -358,3 +358,75 @@
   bake and flash all pass, and flash is verified repeatable. The parallel
   multi-node flash exercise also has to wait, since only one node is
   currently eligible.
+
+- 2026-08-29 · T22 · README rewritten for the Go tool (architecture, quickstart,
+  Day-0 physical write with the macOS `diskutil`/`dd` commands, Day-2 loop,
+  the manual flag-file escape hatch, troubleshooting, and an explicit
+  security trade-offs section covering per-flash host keys, MAC-based node
+  verification, and unauthenticated LAN-only HTTP). Cleanup: removed the
+  now-redundant `cmd/mkinitramfs` and the hidden `vanilla-fetch` subcommand
+  (the Makefile uses `prepare -initramfs-only`, and `prepare` fetches the
+  stock image itself), plus the unused `hidden` command field. gofmt clean,
+  `go vet ./...` clean, all tests pass, no image artifacts outside out/ and
+  cache/.
+
+## Final summary
+
+**Status: 21 of 22 tasks done. T21 blocked on an owner action, not on code.**
+
+| phase | tasks | outcome |
+|-------|-------|---------|
+| 0 foundation | T01–T04 | done — module, config, cpio, kmsg, MBR, initramfs assembler |
+| 1 agent | T05–T07 | done — boot/switch_root, netlink+DHCP, reflash/dryrun/capture |
+| 2 image | T08–T11 | done — stock fetch, FAT32 editing, provisioning templates, `prepare` |
+| 3 orchestration | T12–T15 | done — HTTP server, SSH/resolution/preflight, all six commands |
+| 4 hardware | T16–T20 | done on rasputin001; **T21 blocked** (no passwordless sudo on 002/003/004) |
+| 5 docs | T22 | done |
+
+**Measured on real hardware (Raspberry Pi 3, 100 Mbit LAN):**
+
+| operation | duration | notes |
+|-----------|----------|-------|
+| `adopt rasputin001` | **53 s** | includes a full reboot and verification |
+| `dryrun rasputin001` | **2m23s** | 2.98 GB decoded at 40.6 MB/s |
+| `bake` | **22m30s** | reflash ~6m, provision ~4m, capture 11m3s |
+| `flash rasputin001` | **13m7s** / **12m33s** | two runs, ~9m of it downloading at ~4.3 MB/s |
+| `status` (4 nodes) | **8 s** | parallel, read-only |
+
+A `flash all` across four nodes should take about the same wall time as one
+node — they run in parallel and the server is not the bottleneck; the SD
+write is.
+
+**Artifacts:** `out/golden.img.zst` — build `20260829T021418Z-66b2f9`,
+2,448,792,419 B compressed from 8,589,934,592 B of card, sha256
+`00c2b15a…c53f5`, baked from `2026-06-18-raspios-trixie-arm64-lite.img`.
+
+**Six bugs were found and fixed, each with a regression test that fails
+against the old code.** Five were only findable on hardware:
+1. *(T15)* the owner's SSH key is passphrase protected — added SSH agent auth.
+2. *(T15)* a shared dial budget starved the ARP candidate, hiding rasputin003.
+3. *(T19)* the pinned host key was cleared before the reboot, so the "wait for
+   it to go down" polling re-pinned the key that was about to be destroyed.
+4. *(T19)* the health check sampled `systemctl is-system-running` before
+   systemd had finished booting.
+5. *(T19)* `userconfig.service`, Raspberry Pi OS's interactive first-boot
+   dialog, blocks multi-user.target forever on a headless node.
+6. *(T20)* the capture flag was cleared *after* the card was read, so it was
+   baked into the golden image and every clone tried to capture itself.
+
+**Open blockers:** rasputin002/003/004 need one `sudoers.d` command each from
+the owner (exact commands and the follow-up adopt/flash sequence are in
+BLOCKERS.md). rasputin003 is up and healthy but still answers to the
+duplicate hostname `rasputin002`; flashing it fixes that permanently.
+
+**Suggested next steps:**
+- Run the T21 sequence once sudo is granted; it needs no further decisions.
+- The parallel multi-node flash path is written and unit-tested but has never
+  run against two real nodes at once.
+- Zeroing free space before capture would shrink the golden image well below
+  2.4 GB and cut flash time, at the cost of writing ~5 GB to the builder's
+  card each bake. Deliberately not done.
+- The stock `Banner /run/sshwarn` nag survives on flashed nodes (cosmetic,
+  stderr only, does not affect the CLI's parsing).
+- An in-agent debug HTTP endpoint would make a node stuck in recovery
+  inspectable without the console.
