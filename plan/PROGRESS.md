@@ -221,3 +221,17 @@
   initramfs the eth0 driver has not probed yet and /sys/class/net/eth0 does
   not exist. Cosmetic only — the network modes read the MAC after
   NetworkUp(), so capture/progress attribution is unaffected.
+
+- 2026-08-28 · T18 · **HW: dryrun on rasputin001 PASSED — the whole recovery
+  chain works on hardware.** `dryrun rasputin001` took **2m23s** end to end.
+  The node's own report: `result: OK attempt=1 2977955840 bytes in 1m13s
+  (40.6 MB/s)` — i.e. the full 2.98 GB decoded, comfortably above the 2.5 GB
+  plausibility floor, with the zstd frame checksums verified. Server side:
+  735,551,527 B served to MAC b8:27:eb:01:02:03 at a steady **~10 MB/s
+  (≈80 Mbit)**, which is about what a Pi 3's USB ethernet gives. This proves
+  on real hardware: the smsc95xx driver is built into the RPi kernel (the
+  FACTS assumption held), netlink link-up works, DHCP works, HTTP streaming
+  works, klauspost zstd decode works, and the agent cleared its flag and
+  rebooted into the normal system. The SD card was never opened for writing.
+  Note: the node came back via the ARP candidate (192.168.0.74) because mDNS
+  had not re-announced yet — the multi-candidate resolver earned its keep.
