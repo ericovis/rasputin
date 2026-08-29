@@ -456,7 +456,7 @@ type DryrunReport struct {
 	Err     error
 }
 
-// Result is the one-line verdict, in the same shape the legacy shell
+// Result is the one-line verdict, in the same shape the original shell
 // prototype wrote, so existing eyes and greps still work.
 func (r DryrunReport) Result() string {
 	if r.Err != nil {

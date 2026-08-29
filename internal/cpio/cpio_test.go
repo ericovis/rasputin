@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// consoleEntry is the exact byte layout documented in plan/FACTS.md for a
+// consoleEntry is the exact newc byte layout the kernel accepts for a
 // dev/console character device written as the first entry of an archive:
 // magic, then ino=1 mode=0x2180 uid=0 gid=0 nlink=1 mtime=0 filesize=0
 // devmaj=0 devmin=0 rdevmaj=5 rdevmin=1 namesize=12 check=0, then

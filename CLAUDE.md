@@ -19,15 +19,20 @@ still vets and tests on the Mac.
 ## Ground rules
 
 - **No git remote. Never push.** Commit freely; `out/` and `cache/` are
-  gitignored and must stay uncommitted.
-- `plan/FACTS.md` is ground truth about the cluster; `plan/PROGRESS.md` is
-  the full history including every bug and its cause. Update FACTS if you
-  discover something there is wrong.
+  gitignored and must stay uncommitted. The `plan/` docs and the `legacy/`
+  shell prototype were removed 2026-08-29; their history (including every
+  hardware bug and its cause) is in git.
 - Hardware operations are destructive (a flash is ~6 min, a bake ~16 min,
   both measured 2026-08-29). Confirm with the owner before wiping a node.
 - `bake` needs ~5 GB free on `/`. Disk has run out mid-capture before;
   `out/vanilla-custom.img` (2.9 GB) is a regenerable intermediate and is the
-  first thing to delete — the runbook deletes it after every `prepare`.
+  first thing to delete — delete it after every `prepare`.
+- Docker is not used today, but the old "MUST NOT be used" rule is revised:
+  the owner has approved a future opt-in `bake --strategy=local` that
+  provisions the golden in an arm64 container. It must stay an explicit
+  flag (never auto-selected — an on-Pi bake proves the image boots, a local
+  one does not), record its strategy in `golden.json`, and reuse the same
+  rendered provision/seal scripts rather than reimplementing them.
 
 ## Traps that have already bitten
 
@@ -72,13 +77,17 @@ Each of these has a regression test. If you touch the area, run it.
 
 ## The cluster
 
-Four Pi 3s, wired, DHCP on 192.168.0.0/24. All four now run the golden image
-(build `20260829T205033Z-307368`) as user **`berry`** — `ericovis` no longer
-exists on them. MACs are in `rasputin.yaml`; that is the identity that
-matters, not the name or the IP.
+Four Pi 3 Model B, wired, DHCP on 192.168.0.0/24, 32 GB cards, Raspberry Pi
+OS Trixie (arm64). All four now run the golden image (build
+`20260829T205033Z-307368`) as user **`berry`** — `ericovis` no longer exists
+on them. MACs are in `rasputin.yaml`; that is the identity that matters, not
+the name or the IP. `rasputin001` is the builder.
 
 - The owner's SSH key is **passphrase protected** and used through the macOS
   ssh-agent. `sshx` tries the agent first, then the key file.
+- The wire tops out around 10 MB/s and a flashing node consumes ~4.3 MB/s,
+  so up to two concurrent flashes run at solo speed; three or four share the
+  link and each slows ~20–25%. Physics, not a regression.
 - All four nodes have passwordless sudo. `ssh.sudo: password` in the YAML is
   the fallback for nodes that do not; the password comes from
   `$RASPUTIN_SUDO_PASSWORD` or a prompt, **never** from the config file.

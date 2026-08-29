@@ -291,7 +291,8 @@ func fakeTools(t *testing.T, witness string, resize2fsExit int) string {
 
 // growSysDir writes the sysfs stand-ins for /sys/block/mmcblk0/mmcblk0p2:
 // p2 starts at sector 1056768 and is currently smaller than the 32 GB card
-// (32,026,656,768 B, plan/FACTS.md), so an attempted grow must reach sfdisk.
+// (32,026,656,768 B, as the cluster's cards report), so an attempted grow
+// must reach sfdisk.
 func growSysDir(t *testing.T, dir string) string {
 	t.Helper()
 	sys := filepath.Join(dir, "sys")

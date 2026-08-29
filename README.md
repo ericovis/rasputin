@@ -115,17 +115,125 @@ git is a password published.
 RASPUTIN_SUDO_PASSWORD="$(pass show cluster/sudo)" go run ./cmd/rasputin adopt all
 ```
 
+## Configuration
+
+Everything is driven by one file, `rasputin.yaml`. Pass `-c <path>` before
+the command to use a different one (`rasputin -c other.yaml status`).
+
+```yaml
+cluster: rasputin        # name, used in logs
+server:
+  port: 8080             # HTTP port for serving images and receiving captures.
+                         # 0 picks a random free port. The bind address is
+                         # always auto-detected from the default route.
+image:
+  source_url: https://downloads.raspberrypi.com/raspios_lite_arm64_latest
+  rootfs_size_gb: 4      # rootfs cap for the BAKED golden only. Small cap =
+                         # short captures and flashes; every clone grows its
+                         # filesystem to the whole card on first boot.
+ssh:
+  key: ~/.ssh/id_ed25519 # the agent is tried first, then this file
+  users: [berry]         # SSH users, tried in order
+  sudo: passwordless     # or `password` — see the sudo section
+provision:               # what every node ends up with
+  user: berry
+  authorized_keys: ~/.ssh/id_ed25519.pub
+  timezone: America/Sao_Paulo
+  locale: en_US.UTF-8
+  packages: [podman, curl, htop, vim, git, tmux]
+builder: rasputin001     # the node `bake` wipes and captures
+timeouts:
+  flash_minutes: 25
+  bake_minutes: 45
+nodes:                   # the MAC is the node's identity; names and IPs
+  - { name: rasputin001, mac: "b8:27:eb:01:02:03" }   # are convenience
+  - { name: rasputin002, mac: "b8:27:eb:04:05:06" }
+```
+
+Anything under `image:` or `provision:` is baked into the image, and the
+values are consumed at **prepare** time, not bake time. After editing them,
+always run the full sequence — `prepare`, then delete the stale
+intermediate, then `bake`:
+
+```sh
+go run ./cmd/rasputin prepare && rm -f out/vanilla-custom.img
+go run ./cmd/rasputin bake
+go run ./cmd/rasputin flash all
+```
+
 ## Commands
 
-| command | what it does |
-|---|---|
-| `prepare` | build `recovery.gz`, fetch and customise the stock image |
-| `adopt <node\|all>` | install the recovery mechanism on a live node, over SSH. Does not flash |
-| `dryrun <node\|all>` | rehearse the whole download-and-decode pipeline. Never opens the card for writing |
-| `bake` | reflash the builder, let it provision, seal it, capture it as `out/golden.img.zst` |
-| `flash <node...\|all>` | clone the golden image onto nodes, in parallel, and verify each one |
-| `status` | node, address, SSH user, hostname, build id, provisioned, uptime. Read-only |
-| `serve` | run the HTTP server alone, for hand-triggering a flash |
+Nodes are named by their config `name`, or `all` for every configured node.
+
+### `prepare` — build the artifacts
+
+Builds `out/recovery.gz` (the recovery agent initramfs) and turns the
+cached stock Raspberry Pi OS image into `out/vanilla-custom.img.zst` with a
+customised boot partition. ~15 s with a warm cache; the first run downloads
+the stock image (~500 MB) into `cache/`. Harmless to re-run, required after
+any `rasputin.yaml` change.
+
+- `-initramfs-only` — stop after `recovery.gz` (this is what `make build`
+  runs).
+
+### `adopt <node|all>` — bring a live node under management
+
+Installs the recovery mechanism on a node that already runs an OS and
+answers SSH: copies `recovery.gz` to the boot partition, adds the
+`initramfs` line to `config.txt` (backing up the original as
+`config.txt.pre-rasputin`), then reboots the node once to prove it still
+boots. Does **not** flash anything. ~45 s per node.
+
+- `-reboot-check=false` — skip the verification reboot.
+
+### `dryrun <node|all>` — rehearse without risk
+
+Makes the node download and decode the entire image exactly as a flash
+would, into a discard writer. The card is never opened for writing. The
+node leaves a `reflash-dryrun.log` report on its boot partition, which the
+CLI prints. ~2 min.
+
+- `-vanilla` — rehearse with the prepared stock image even when a golden
+  image exists.
+
+### `bake` — build the golden image
+
+**Wipes the `builder:` node.** Reflashes it with the prepared stock image,
+waits for it to provision itself (packages, user, timezone), runs the seal
+script that strips everything unique (host keys, machine-id, logs), then
+has the recovery agent stream the card back as `out/golden.img.zst`. The
+upload is fully decoded and checksum-verified before it can replace a
+previous golden, and the bake only reports success after the builder
+reboots into its own sealed system and passes the same health checks a
+flashed clone gets. ~16 min end to end, of which the capture is ~4 min.
+
+### `flash <node...|all>` — clone the golden image
+
+Writes the golden image to each target node and verifies the result: build
+id matches, hostname reapplied by the identity service, systemd settles.
+Nodes flash **in parallel** — each is independent, and a node that fails is
+left safely in the retrying recovery agent, not half-written. A node
+already running the golden build is skipped in about a second, so
+`flash all` is always safe to reach for.
+
+- `-force` — reflash a node even when it already runs the golden build.
+
+~6 min per node. Up to two nodes flash at full speed simultaneously; three
+or four share the 100 Mbit wire and each slows by roughly a quarter, which
+still beats flashing them one after another. After a successful flash the
+CLI clears your `~/.ssh/known_hosts` entries for the node, so plain `ssh`
+keeps working despite the regenerated host keys.
+
+### `status` — read-only health table
+
+Node, address, SSH user, hostname, build id, provisioned marker, uptime,
+for every configured node. ~2 s. Touches nothing.
+
+### `serve` — the HTTP server alone
+
+Runs the image/capture server without triggering anything, for
+hand-triggered flashes (see the escape hatch below). Prints the exact
+flag-file line to paste.
 
 ## Day 0: a virgin SD card
 
@@ -152,10 +260,14 @@ filesystem, and installs the identity service. From then on the node answers
 
 ```sh
 $EDITOR rasputin.yaml          # e.g. add a package
-go run ./cmd/rasputin prepare
+go run ./cmd/rasputin prepare && rm -f out/vanilla-custom.img
 go run ./cmd/rasputin bake     # wipes and rebuilds the builder
 go run ./cmd/rasputin flash all
 ```
+
+The `rm` matters: the decompressed intermediate is 2.9 GB of regenerable
+disk, and a bake without a fresh `prepare` would silently reuse values from
+the previous config (see *Configuration*).
 
 ## Escape hatch: trigger a flash by hand
 
@@ -239,8 +351,6 @@ internal/provision  firstrun/identity/provision/seal templates
 internal/server   HTTP server: image serving, capture receipt, progress
 internal/sshx     SSH client with user fallback and host-key pinning
 internal/vanilla  stock image download, xz decode, cache
-legacy/           the shell prototype this replaced, kept as a reference
-plan/             the execution plan, progress log and blockers
 ```
 
 ## Development
