@@ -462,3 +462,26 @@ duplicate hostname `rasputin002`; flashing it fixes that permanently.
   Note: rasputin002/003/004 still refuse `sudo -n true` as of 2026-08-29
   05:0x, so the owner's sudoers grant did not take effect. T21 can now
   proceed either by fixing that or by running with ssh.sudo: password.
+
+- 2026-08-29 · T21 · **HW: the whole cluster is on the golden image. DONE.**
+  The owner's sudoers grant took effect at ~05:10; all three remaining nodes
+  then passed `sudo -n true`.
+  | node | adopt | flash | notes |
+  |------|-------|-------|-------|
+  | rasputin002 | PASS | **13m18s** | first non-builder clone |
+  | rasputin003 | PASS | **10m28s** | **duplicate hostname fixed** |
+  | rasputin004 | PASS | **11m4s**  | |
+  | rasputin002 + rasputin004 in parallel | — | **12m48s / 10m29s** | concurrent |
+  **rasputin003's duplicate hostname is gone.** It had answered to
+  `rasputin002` for as long as anyone knew, which is why `rasputin003.local`
+  never resolved and why it looked offline during planning. After the flash
+  it announces itself as `rasputin003.local` over mDNS with hostname
+  `rasputin003` — applied purely from its MAC by the baked-in identity
+  service, with no per-node image and nobody touching the hardware.
+  **The parallel flash is the headline number:** two nodes rebuilt at once,
+  each pulling at 4.5 MB/s — the *same* rate as a single node alone. The
+  server is not the bottleneck; the SD card write is. So `flash all` across
+  four nodes costs about what one node costs, ~13 minutes.
+  Final state: all four nodes on build 20260829T021418Z-66b2f9, all
+  provisioned, all reachable as `berry`, each with the correct per-MAC
+  hostname.

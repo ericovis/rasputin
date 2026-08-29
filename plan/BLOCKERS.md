@@ -4,8 +4,18 @@ Format: date, task, description, what was tried, what would unblock it.
 
 ## Open
 
-- 2026-08-29 · T21 · **BLOCKED: rasputin002, rasputin003 and rasputin004 lack
-  passwordless sudo** for user `ericovis` (`sudo -n true` fails; 003 confirmed
+(none — every blocker is resolved.)
+
+## Resolved
+
+- 2026-08-29 · T21 · ~~rasputin002/003/004 lack passwordless sudo~~ —
+  **RESOLVED.** The owner granted it 2026-08-29 ~05:10; all three then passed
+  `sudo -n true` and T21 completed. Original entry kept below for the record.
+  (Also mitigated in code: `ssh.sudo: password` now lets the CLI manage nodes
+  that never receive the grant.)
+
+- 2026-08-29 · T21 · (resolved) rasputin002, rasputin003 and rasputin004 lacked
+  passwordless sudo for user `ericovis` (`sudo -n true` fails; 003 confirmed
   2026-08-28 at 192.168.0.222). Remote adoption/flash triggering needs it.
   Unblock: the owner runs, on each of the three nodes:
   `echo 'ericovis ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/ericovis`
