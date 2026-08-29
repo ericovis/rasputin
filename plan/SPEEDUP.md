@@ -433,7 +433,75 @@ on rasputin002.
 **DoD:** PASS 1–4 recorded; `known_hosts` cleaned automatically (plain
 `ssh berry@rasputin002.local` works with no REMOTE HOST warning).
 
-- measured (wall / build id / poison check):
+**MEASURED 2026-08-29 — PASS on substance, but the run was INTERRUPTED and
+the timing is therefore void.**
+
+*What happened:* the flash was started in a background shell at 16:10:47Z; it
+armed rasputin002 and rebooted it, then the Claude Code session that owned the
+process was torn down, killing the CLI **and its HTTP server** while 002 was
+in the recovery agent. This is the documented "node stuck in the recovery
+agent" state, and it is not a brick: the agent never opens the card for
+writing until an HTTP probe of the image URL succeeds, and it retries forever.
+Observed exactly as predicted — 002 answered ping but refused SSH (no sshd in
+the initramfs), while its card still held the old system.
+
+*Recovery, per this file's rollback section:* `go run ./cmd/rasputin serve`
+re-served the golden at the same URL the node had already armed
+(`http://192.168.0.228:8080/i/golden.img.zst`; the Mac kept the same IP), and
+the waiting agent completed the flash on its next retry. Server up 16:12:57Z,
+002 back on SSH 16:25:41Z.
+
+| PASS | criterion | measured | verdict |
+|---|---|---|---|
+| 1 | build id + hostname + healthy | `rasputin002`, `20260829T153436Z-d68089` | **PASS** |
+| 2 | wall time 10m30s-14m | **VOID** — see below | not measurable |
+| 3 | A2 rate lines visible | not observable (step-1 deviation) | n/a |
+| 4 | zero capture POSTs | **zero** | **PASS** |
+
+PASS 2 is void, not failed: the elapsed 16:10:47Z -> 16:25:41Z (14m54s)
+contains a ~2m10s dead window with no server plus an unknown slice of the
+agent's retry backoff. **Flash wall time is UNMEASURED this session** — do not
+quote 14m54s as a result.
+
+**PASS 4 — POISON CHECK PASS.** The server log records exactly one transfer,
+`served golden.img.zst to b8:27:eb:04:05:06 (1124964220 bytes)`, and **zero**
+`capture` POSTs and zero `rejected a capture POST for unknown id` lines. The
+new golden does not poison its clones; the T20 trap is clear on hardware, not
+just by inspection of the image.
+
+**BONUS — Lane C's grow verified on real hardware, ahead of schedule.** Bake
+#1's golden carries the grow marker at an 8 GiB cap, so rasputin002 grew
+8 GiB -> whole card on first boot. The step-4 node checks, run here on 002:
+
+| check | result |
+|---|---|
+| `lsblk` p2 | **31,481,397,248 B** of a 32,026,656,768 B card (was 8,044,675,072) |
+| `df -h /` | **29G total, 3.0G used, 25G avail** (ungrown would be ~7.5G) |
+| `hostname` | `rasputin002` |
+| `/etc/rasputin-release` | `build_id=20260829T153436Z-d68089` |
+| `/var/lib/rasputin/provisioned` | **present** — seal did not delete it; no apt re-run |
+| `/var/lib/rasputin/grow-rootfs` | **cleared** — successful grow |
+
+The cleared marker *is* the idempotency mechanism: `identity.sh` gates on
+`[ -f "$GROW_MARKER" ]`, so the next boot cannot enter `grow_to_card` at all.
+The explicit reboot check is deliberately DEFERRED — see the stop note.
+`first_boot_at=2026-06-17T21:28:16-03:00` in the release file is the no-RTC
+fake-hwclock artifact CLAUDE.md warns about; `prepared_at` correctly carries
+build-host time.
+
+**Two incidental findings, both fixed:**
+1. The interrupted flash never ran its post-flash `known_hosts` purge, so the
+   CLI kept 002's old key pinned and reported it unreachable. Cleared the
+   stale key from `out/state.json`. Safe with respect to the CLAUDE.md trap:
+   002 was already up with regenerated keys and no reboot was pending, so
+   there was no `waitGone` poll to re-pin it.
+2. `out/state.json` carried a stray trailing `}` (a second root-level brace).
+   Go's `json.Decoder` reads the first complete value and ignores trailing
+   bytes, so the CLI never noticed; strict parsers reject the file. `Save()`
+   itself is atomic (tmp + `os.Rename`, covered by
+   `TestSaveIsAtomicAndPrivate`), so this was NOT caused by the kill — origin
+   unknown, predates this session. Rewritten clean. `out/state.json.bak`
+   holds the original.
 
 ---
 
@@ -604,3 +672,54 @@ enough to compare directly, because it integrates over 3–11 minutes on the
 same card. Per-node parallel-flash rates additionally depend on how many nodes
 share the ~10 MB/s wire: parity with solo runs is only expected at ≤2
 concurrent.
+
+
+---
+
+## STOP NOTE — where this run halted and how to resume (2026-08-29)
+
+**Halted before Step 4, deliberately.** The owner left mid-run. Steps 4 and 5
+are new destructive operations (bake #2 wipes rasputin001; flash wipes
+rasputin003; `flash all` puts all four in scope) and this file's hard rule is
+that an OWNER GATE needs a fresh, explicit yes naming every node at risk.
+"Resume on auto mode" does not name nodes, so it was not treated as
+authorization. Completing rasputin002 WAS in scope: it was the recovery path
+for an operation the owner had already gated, and leaving a node stranded in
+the recovery agent is strictly worse than finishing it.
+
+**Cluster state at the stop (all four reachable, MAC-verified):**
+
+| node | build | note |
+|---|---|---|
+| rasputin001 | `20260829T153436Z-d68089` | baked; rootfs at the 8 GiB cap |
+| rasputin002 | `20260829T153436Z-d68089` | flashed clone, grown to the full 32 GB card |
+| rasputin003 | `20260829T021418Z-66b2f9` | untouched, pre-speedup golden |
+| rasputin004 | `20260829T021418Z-66b2f9` | untouched, pre-speedup golden |
+
+**Repo state:** `main`, working tree clean. `rasputin.yaml` restored to Lane
+C's merged `rootfs_size_gb: 4`; `git diff rasputin.yaml` is empty.
+`make test` green.
+
+**READ THIS BEFORE RESUMING (fact F7).** `out/vanilla-custom.img.zst` on disk
+right now was prepared with **cap 8**, while `rasputin.yaml` says **4**. They
+disagree on purpose — the yaml was restored so the tree is clean. Step 4's
+mandatory sequence already fixes it and must not be skipped: set the cap ->
+`go run ./cmd/rasputin prepare` -> `rm out/vanilla-custom.img` -> record the
+new build id -> then bake. Baking without that re-prepare produces a golden at
+the wrong cap whose PASS checks fail on a healthy system.
+
+**Still outstanding:**
+- Step 4: bake #2 at 4 GiB (OWNER GATE, wipes rasputin001) + flash rasputin003
+  (OWNER GATE) + the eight node checks including the reboot-idempotency check
+  that was deferred here.
+- Step 5: `flash all` (OWNER GATE covering all four) — the conclusive B2
+  skip-line verification. P9 predicts 001 and 003 skip, 002 and 004 flash.
+- Step 6: FACTS/CLAUDE/README updates, deliberately NOT written yet — the
+  cluster is mid-migration (two nodes per build), so "current truth" docs
+  would be stale within the hour. PROGRESS.md has the history entry.
+- A clean flash wall-time measurement, which this session did not obtain.
+
+**Do not pipe a bake or flash through `tail`** — it withholds all output until
+the process exits and cost this run its phase breakdown. Redirect to a file.
+Better still, run long hardware operations detached from the agent session so
+a teardown cannot kill the HTTP server mid-flash.

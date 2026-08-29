@@ -538,3 +538,91 @@ is now permanently fixed by the identity service.
   stderr only, does not affect the CLI's parsing).
 - An in-agent debug HTTP endpoint would make a node stuck in recovery
   inspectable without a console.
+
+---
+
+## SPEEDUP — lanes A/B/C merged, hardware validation partially executed
+
+- 2026-08-29 · SPEEDUP · Three implementation lanes from `plan/speedup/` were
+  executed by parallel agents in isolated worktrees and merged A → B → C, with
+  `make test` after each merge and `make build && make test` after C. The
+  combined diff is 14 files, exactly the union of the three lanes' allowed
+  sets. Lane A: parallel zstd capture encode (`uploadConcurrency = 3`,
+  `WithConcurrentBlocks`) plus overlapped writeback via `sync_file_range` with
+  a blocking-`Sync` fallback. Lane B: `provisionPoll` 20s→5s, and `flash`
+  skips a node already on the golden build unless `-force`. Lane C: golden
+  baked at a 4 GiB rootfs cap, with clones growing to the whole card on first
+  boot gated on a seal-created `/var/lib/rasputin/grow-rootfs` marker.
+
+- 2026-08-29 · SPEEDUP · **Capture is no longer encode-bound — the headline
+  result.** Bake #1 (8 GiB cap, so it is comparable to the baseline) read
+  8,589,934,592 B in **7m11s = 19.93 MB/s**, against the baseline 663 s @
+  12.96 MB/s: **1.54× faster, 3m52s saved**, landing inside Lane A's predicted
+  SD-read-bound band of 19–23 MB/s.
+
+| run | result | duration |
+|---|---|---|
+| `adopt rasputin001` | PASS | 45.8 s |
+| `dryrun -vanilla rasputin001` | PASS, 2,977,955,840 B @ 40.8 MB/s decode | 2m10s |
+| `prepare` (full, warm cache) | build `20260829T153436Z-d68089` | 16.5 s |
+| `bake` #1 (8 GiB cap) | PASS, capture 7m11s @ 19.93 MB/s | 19m25s |
+| `flash rasputin002` | PASS on substance; timing VOID (interrupted) | not measurable |
+
+- 2026-08-29 · SPEEDUP · **The golden-size acceptance band was unsound and is
+  withdrawn.** Bake #1's golden came out at 1,124,964,220 B against a
+  predicted 2,375,328,646–2,522,256,192 B. Cause: `seal.sh.tmpl` deliberately
+  never zeroes free space, so every capture carries ~5.7 GB of whatever stale
+  bytes are on the card, and the compressed size tracks the *card's history*
+  rather than the build. Measured zero-fraction per GiB of both decoded
+  goldens settles it: GiB 0–3 (the real filesystem) match within noise
+  (76.2/76.3, 33.5/33.4, 36.0/35.9, 49.9/51.1 %), and the entire 1.32 GB
+  difference is GiB 4–5 — 28.6 %/24.2 % zero in the baseline against
+  99.9 %/100 % now, most likely because `fstrim.timer` had since trimmed those
+  blocks and trimmed SD blocks read back as zeros. Nothing is missing: the
+  image decodes to exactly 8,589,934,592 B with valid CRCs, and `verifyImage`
+  hard-requires that length to equal the partition table's `UsedBytes`.
+  Note this vindicates the old "suggested next step" above — zeroing free
+  space would shrink the golden — but shows the card sometimes supplies the
+  zeroes for free.
+
+- 2026-08-29 · SPEEDUP · **Lane C's clone grow verified on hardware.**
+  rasputin002, flashed from bake #1's 8 GiB golden, grew its rootfs to
+  31,481,397,248 B of the 32,026,656,768 B card (`df -h /` → 29G total, 25G
+  avail), kept `/var/lib/rasputin/provisioned` (so no apt re-run — the seal
+  trap holds), and cleared the grow marker, which is itself the idempotency
+  mechanism since `identity.sh` gates on the marker's existence.
+
+- 2026-08-29 · SPEEDUP · **T20's poison trap re-verified on hardware.** During
+  the rasputin002 flash the server logged exactly one transfer and **zero**
+  `capture` POSTs, so the new golden does not cause its clones to try to
+  capture themselves.
+
+- 2026-08-29 · SPEEDUP · Bug found, not in the lanes' code: `out/state.json`
+  carried a stray trailing `}`. Go's `json.Decoder` reads the first complete
+  value and ignores trailing bytes, so the CLI never noticed, but strict
+  parsers reject the file. `Store.Save` is atomic (tmp + `os.Rename`, covered
+  by `TestSaveIsAtomicAndPrivate`), so a killed process did not cause it;
+  origin unknown and predating this session. Rewritten clean, original kept at
+  `out/state.json.bak`.
+
+- 2026-08-29 · SPEEDUP · Operational lesson, paid for twice. A `flash` was
+  started in a background shell owned by the agent session; when the session
+  was torn down it killed the CLI **and its HTTP server** while rasputin002 sat
+  in the recovery agent. No damage — the agent does not open the card for
+  writing until an image probe succeeds, so the node simply retried forever
+  with its old system intact, answering ping but refusing SSH. `rasputin serve`
+  re-served the same URL and the armed agent finished on its next retry.
+  Two rules follow: never pipe a long hardware operation through `tail` (it
+  withholds output until exit, which cost bake #1 its phase breakdown), and
+  run such operations detached from the agent session.
+
+- 2026-08-29 · SPEEDUP · **Halted before Step 4 by design.** Bake #2, the
+  rasputin003 flash and `flash all` are destructive and each needs the owner's
+  explicit consent naming the nodes at risk. Cluster left healthy and
+  MAC-verified: rasputin001 and rasputin002 on `20260829T153436Z-d68089`,
+  rasputin003 and rasputin004 still on `20260829T021418Z-66b2f9`. `plan/FACTS.md`,
+  `CLAUDE.md` and `README.md` deliberately not updated yet — the cluster is
+  mid-migration, so "current truth" would be stale within the hour. Resume
+  instructions, including the mandatory re-`prepare` (the on-disk
+  `vanilla-custom.img.zst` is at cap 8 while the yaml says 4), are in the STOP
+  NOTE at the end of `plan/SPEEDUP.md`.
