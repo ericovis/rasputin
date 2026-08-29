@@ -324,9 +324,77 @@ masked before suspecting anything else.
 Pre-bake `status`: 4/4 healthy, all on `20260829T021418Z-66b2f9`,
 rasputin001 up 2 minutes (its post-dryrun reboot).
 
-- measured (total / phases):
-- measured (capture wall / MB/s):
-- measured (golden size / card_used_bytes / build id):
+**MEASURED 2026-08-29 — bake #1 exit 0 in 19m25s (15:36:39Z -> 15:56:05Z).**
+
+| PASS | criterion | measured | verdict |
+|---|---|---|---|
+| 1 | total <= 19m | **19m25s** | 25 s over — see below |
+| 2 | capture <= 9m30s | **7m11s** | **PASS** |
+| 3 | size within +/-3% of 2,448,792,419 B | **1,124,964,220 B** | band unsound — see below |
+| 4 | `card_used_bytes` == 8,589,934,592 | **8,589,934,592** | **PASS** |
+| 5 | builder healthy | `rasputin001, build 20260829T153436Z-d68089` | **PASS** |
+| 6 | no OOM | node UP throughout (independent ping sampler) | **PASS** |
+
+**THE HEADLINE RESULT — Lane A works.** Capture 8,589,934,592 B in 7m11s =
+**19.93 MB/s**, against the 663 s / 12.96 MB/s baseline: **1.54x faster,
+3m52s saved**, landing squarely inside Lane A's predicted SD-read-bound band
+of 19-23 MB/s. The capture is no longer encode-bound.
+
+**PASS 1 (19m25s vs <=19m) is not a regression; the gate is tighter than the
+error bar.** Capture saved 232 s but the total only fell 185 s (22m30s ->
+19m25s), so the non-capture phases ran 47 s longer than baseline — 6.5% on
+~12 min of reflash/provision/verify, well inside F6's +/-27%. The <=19m
+number assumed zero variance outside the capture. The phase-by-phase
+breakdown for this run was lost: the command was piped through `tail -80`,
+which discarded the reflash lines. **Do not pipe a bake through `tail` again
+— redirect to a file and tail that.**
+
+**PASS 3: the +/-3% size band is UNSOUND and should be struck from this
+runbook.** Root cause, from the code: `seal.sh.tmpl:64-65` deliberately does
+NOT zero free space ("Zeroing free space would make the capture compress far
+better, but on a 32 GB card it also writes tens of gigabytes to the flash.
+Not worth it"). A capture therefore always includes ~5.7 GB of whatever stale
+bytes happened to be on the card, so the compressed size is a property of the
+card's history, not of the build. Measured zero-fraction per GiB of both
+decoded goldens proves it:
+
+| GiB | baseline golden | bake #1 golden |
+|---|---|---|
+| 0 | 76.18% | 76.34% |
+| 1 | 33.47% | 33.41% |
+| 2 | 35.99% | 35.94% |
+| 3 | 49.93% | 51.13% |
+| 4 | 28.55% | **99.90%** |
+| 5 | 24.19% | **100.00%** |
+| 6 | 95.58% | 100.00% |
+| 7 | 100.00% | 100.00% |
+
+GiB 0-3 — the actual filesystem — are identical within noise. The whole
+1.32 GB size difference is stale data in GiB 4-5 that this card no longer
+had (most likely trimmed: Raspberry Pi OS runs `fstrim.timer` weekly, and
+trimmed SD blocks read back as zeros). Nothing is missing from the image.
+
+**Independent verification that the golden is sound** (not just mechanically
+valid — this is the F1 / T20 concern):
+- `verifyImage` decodes the WHOLE stream with CRCs on and hard-requires
+  `total == table.UsedBytes()` (`bake.go:270`), so 8,589,934,592 decoded
+  bytes is proven, not inferred. Re-confirmed independently: a full
+  `zstd -dc | wc` decode gives exactly 8,589,934,592.
+- MBR: p1 FAT32 (0x0c) 536,870,912 B at offset 8,388,608; p2 Linux (0x83)
+  ending at exactly 8,589,934,592.
+- Boot partition extracted and mounted read-only:
+  - **POISON CHECK PASS** — no `capture`, `reflash` or `reflash-dryrun` flag
+    file present. The T20 self-replicating trap is absent.
+  - `rasputin-build-id` = `20260829T153436Z-d68089` (this bake's).
+  - `cmdline.txt` carries no `systemd.run` triplet — firstrun correctly
+    disarmed.
+  - `nodes.conf` has all four MACs.
+  - `rasputin-identity` contains Lane C's `grow_to_card` / `GROW_MARKER`
+    logic; `firstrun.sh` and `rasputin-seal` both carry `ROOTFS_CAP_GB=8`,
+    this bake's cap, with seal's ABORT fit-guard present.
+
+- measured (phase breakdown): LOST to `tail -80` truncation; capture and
+  total only. Fix the logging before bake #2.
 
 ---
 
