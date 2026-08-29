@@ -142,14 +142,43 @@ func (c *Cluster) verifyClone(conn nodes.Conn, node config.Node, meta *GoldenMet
 			node.Name, res.Hostname)
 	}
 
-	// is-system-running exits non-zero for "degraded", which is normal on a
-	// first boot where an optional unit failed, so the text is what counts.
-	state, _ := conn.Output("systemctl is-system-running")
-	state = strings.TrimSpace(state)
-	switch state {
-	case "running", "degraded":
-	default:
-		return fmt.Errorf("%s: systemd reports %q, want running or degraded", node.Name, state)
-	}
-	return nil
+	return waitSystemSettled(conn, node, SettleTimeout)
 }
+
+// SettleTimeout is how long systemd gets to finish booting once the node is
+// answering SSH.
+const SettleTimeout = 3 * time.Minute
+
+// waitSystemSettled waits for systemd to finish starting.
+//
+// sshd is up long before the rest of the system is, so the first thing a
+// freshly booted node says is "starting" or "initializing". Sampling once
+// the moment SSH answers reports a healthy node as broken — which is exactly
+// what it did on the first successful bake.
+func waitSystemSettled(conn nodes.Conn, node config.Node, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var last string
+	for {
+		// is-system-running exits non-zero for "degraded", which is normal
+		// on a first boot where an optional unit failed, so the text is what
+		// counts, not the exit code.
+		out, _ := conn.Output("systemctl is-system-running")
+		last = strings.TrimSpace(out)
+		switch last {
+		case "running", "degraded":
+			return nil
+		case "starting", "initializing", "maintenance", "":
+			// Still coming up (or sshd answered before systemd could).
+		default:
+			return fmt.Errorf("%s: systemd reports %q, want running or degraded", node.Name, last)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s: systemd was still %q after %s", node.Name, last, timeout)
+		}
+		time.Sleep(settlePoll)
+	}
+}
+
+// settlePoll is how often the settle check re-asks. It is a variable so
+// tests can run the retry logic without waiting on a real boot.
+var settlePoll = 5 * time.Second

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -198,4 +199,83 @@ func TestRebootFailsWhenTheNodeNeverGoesDown(t *testing.T) {
 	if _, err := c.RebootAndWait(ctx, node, conn, RebootOptions{Back: time.Second}); err == nil {
 		t.Fatal("RebootAndWait reported success for a node that never went down")
 	}
+}
+
+// settleConn answers is-system-running with a scripted sequence, so the
+// settle logic can be tested without a node.
+type settleConn struct {
+	states []string
+	calls  int
+}
+
+func (c *settleConn) Run(string) (sshx.Result, error)  { return sshx.Result{}, nil }
+func (c *settleConn) Sudo(string) (sshx.Result, error) { return sshx.Result{}, nil }
+func (c *settleConn) Output(cmd string) (string, error) {
+	if cmd != "systemctl is-system-running" {
+		return "", nil
+	}
+	i := c.calls
+	c.calls++
+	if i >= len(c.states) {
+		i = len(c.states) - 1
+	}
+	return c.states[i], nil
+}
+func (c *settleConn) Push(string, []byte, string) error { return nil }
+func (c *settleConn) Fetch(string) ([]byte, error)      { return nil, nil }
+func (c *settleConn) User() string                      { return "berry" }
+func (c *settleConn) Host() string                      { return "h" }
+func (c *settleConn) Close() error                      { return nil }
+
+// TestWaitSystemSettled is the regression test for the second bug the first
+// successful bake exposed: a node that had only just booted was reported as
+// broken because sshd answers well before systemd has finished starting.
+func TestWaitSystemSettled(t *testing.T) {
+	node := config.Node{Name: "rasputin001"}
+	old := settlePoll
+	settlePoll = time.Millisecond
+	t.Cleanup(func() { settlePoll = old })
+
+	t.Run("waits through starting", func(t *testing.T) {
+		conn := &settleConn{states: []string{"starting", "starting", "running"}}
+		if err := waitSystemSettled(conn, node, 30*time.Second); err != nil {
+			t.Errorf("waitSystemSettled: %v", err)
+		}
+		if conn.calls < 3 {
+			t.Errorf("gave up after %d checks", conn.calls)
+		}
+	})
+
+	t.Run("accepts degraded", func(t *testing.T) {
+		if err := waitSystemSettled(&settleConn{states: []string{"degraded"}}, node, time.Second); err != nil {
+			t.Errorf("degraded should be acceptable: %v", err)
+		}
+	})
+
+	t.Run("tolerates an empty answer while sshd races systemd", func(t *testing.T) {
+		conn := &settleConn{states: []string{"", "initializing", "running"}}
+		if err := waitSystemSettled(conn, node, 30*time.Second); err != nil {
+			t.Errorf("waitSystemSettled: %v", err)
+		}
+	})
+
+	t.Run("rejects a genuinely broken system", func(t *testing.T) {
+		err := waitSystemSettled(&settleConn{states: []string{"stopping"}}, node, time.Second)
+		if err == nil {
+			t.Fatal("a stopping system was accepted")
+		}
+		if !strings.Contains(err.Error(), "stopping") {
+			t.Errorf("err = %v", err)
+		}
+	})
+
+	t.Run("times out if it never settles", func(t *testing.T) {
+		err := waitSystemSettled(&settleConn{states: []string{"starting"}}, node, 50*time.Millisecond)
+		if err == nil {
+			t.Fatal("a system stuck in starting was accepted")
+		}
+		if !strings.Contains(err.Error(), "still") {
+			t.Errorf("err = %v", err)
+		}
+	})
 }

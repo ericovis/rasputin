@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/ericovis/rasputin/internal/config"
 )
@@ -43,6 +44,10 @@ type Data struct {
 	// BaseImage names the stock image this was built from, recorded in
 	// /etc/rasputin-release so a node can say where it came from.
 	BaseImage string
+	// PreparedAt is when the build host prepared the image, in RFC 3339.
+	// It is templated in rather than read on the node because a Pi has no
+	// real-time clock and firstrun runs before NTP syncs.
+	PreparedAt string
 }
 
 // PackageList is the space-separated package set, for apt and for logging.
@@ -60,6 +65,7 @@ func NewData(cfg *config.Config, baseImage string) (Data, error) {
 		return Data{}, fmt.Errorf("%s is empty; a node with no authorized key would be unreachable", cfg.Provision.AuthorizedKeys)
 	}
 	return Data{
+		PreparedAt:     time.Now().UTC().Format(time.RFC3339),
 		User:           cfg.Provision.User,
 		AuthorizedKeys: trimmed,
 		Timezone:       cfg.Provision.Timezone,

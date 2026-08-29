@@ -18,8 +18,9 @@ log "seal: truncating machine-id"
 : > /etc/machine-id
 rm -f /var/lib/dbus/machine-id
 
-log "seal: clearing the provisioning marker so clones re-check their packages"
-rm -f /var/lib/rasputin/provisioned
+# The provisioning marker is deliberately LEFT in place: the package set is
+# already installed in this image, so a clone re-running apt would only cost
+# time and require the internet to boot cleanly.
 
 log "seal: vacuuming the journal"
 journalctl --rotate >/dev/null 2>&1 || true

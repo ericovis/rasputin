@@ -254,3 +254,35 @@
   Lesson worth keeping: any "wait for it to go away" poll is itself a client,
   and clearing trust before the thing you distrust has actually gone is
   useless.
+
+- 2026-08-28 · T19 · **Second bake attempt: the golden image WAS produced and
+  verified, but the image itself had a defect. Two more real bugs found.**
+  Timings (bake started 21:45:38): reflash+firstrun+reboot **5m35s**,
+  provisioning **~4m**, seal seconds, capture **10m56s** — 2,440,062,750 B
+  compressed from exactly 8,589,934,592 B of card (the 8 GB rootfs cap held
+  precisely). The captured image passed end-to-end zstd decode and its length
+  matched its own partition table. The reconnect-after-reflash worked, which
+  is the host-key fix proving itself on hardware.
+  Bug 3 (CLI): verifyClone sampled `systemctl is-system-running` the instant
+  SSH answered and rejected the node for reporting "starting" — but sshd is
+  up long before systemd finishes booting. Now waitSystemSettled() polls for
+  up to 3 min, accepting running/degraded and tolerating
+  starting/initializing/empty. Regression tests added.
+  Bug 4 (image, the serious one): `userconfig.service` — Raspberry Pi OS's
+  interactive first-boot user dialog — is `Type=oneshot` with
+  `StandardInput=tty` on /dev/tty8, `Restart=on-failure`, and **no timeout**.
+  On a headless node nobody ever answers it, so it blocks multi-user.target
+  forever: systemd never reaches "running" and everything ordered after that
+  target, including our own rasputin-provision.service, never starts.
+  firstrun.sh now disables and masks it, drops the tty1 autologin drop-in,
+  re-enables a normal getty, and removes the sshpwd nag banner.
+  Bug 5 (mine, self-inflicted): seal was deleting
+  /var/lib/rasputin/provisioned "so clones re-check their packages" — which
+  would make every cloned node re-run apt on first boot, needing the internet
+  to boot cleanly and defeating the point of a baked image. The marker now
+  stays; a test asserts it.
+  Also fixed: /etc/rasputin-release recorded `baked_at` from `date` on the
+  node, but a Pi has no RTC and firstrun runs before NTP syncs, so it read
+  the image's fake-hwclock date (2026-06-17, months stale). The build host's
+  timestamp is now templated in as `prepared_at`, with `first_boot_at` kept
+  separately for what the node itself observed.

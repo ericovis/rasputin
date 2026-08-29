@@ -68,8 +68,12 @@ func TestFirstrunContent(t *testing.T) {
 		"resize2fs",
 		"sfdisk",
 		"systemctl enable rasputin-identity.service",
+		"systemctl mask \"$unit\"",
+		"userconfig.service",
 		"systemctl enable rasputin-provision.service",
 		"/etc/rasputin-release",
+		"prepared_at=",
+		"first_boot_at=",
 		"2026-06-18-raspios-trixie-arm64-lite.img",
 		"systemd\\.run=", // the disarming sed
 		"BOOT=/boot/firmware",
@@ -164,6 +168,11 @@ func TestSealContent(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("rasputin-seal is missing %q", want)
 		}
+	}
+	// Removing the provisioning marker would make every clone re-run apt on
+	// first boot, which the golden image exists precisely to avoid.
+	if strings.Contains(got, "rm -f /var/lib/rasputin/provisioned") {
+		t.Error("rasputin-seal clears the provisioning marker; clones would re-run apt")
 	}
 	for _, line := range strings.Split(got, "\n") {
 		cmd := strings.TrimSpace(line)

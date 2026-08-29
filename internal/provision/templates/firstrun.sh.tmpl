@@ -82,6 +82,24 @@ visudo -c -f /etc/sudoers.d/010-rasputin >/dev/null || \
     { rm -f /etc/sudoers.d/010-rasputin; fail "the generated sudoers file is invalid"; }
 log "passwordless sudo configured for $USER_NAME"
 
+# --- disarm Raspberry Pi OS's interactive first-boot setup -------------------
+# userconfig.service is a Type=oneshot dialog on /dev/tty8 with no timeout and
+# Restart=on-failure. On a headless node nobody ever answers it, so it blocks
+# multi-user.target forever: systemd never reaches "running" and every unit
+# ordered after multi-user.target — including our own provisioning — never
+# starts. We create the user ourselves, so it has nothing left to ask.
+for unit in userconfig.service; do
+    systemctl disable "$unit" >/dev/null 2>&1 || true
+    systemctl mask "$unit" >/dev/null 2>&1 || true
+done
+# The console autologin drop-in exists only to run that dialog.
+rm -f /etc/systemd/system/getty@tty1.service.d/autologin.conf
+rmdir /etc/systemd/system/getty@tty1.service.d 2>/dev/null || true
+systemctl enable getty@tty1.service >/dev/null 2>&1 || true
+# ...and the login banner that nags about the user it was going to create.
+rm -f /etc/profile.d/sshpwd.sh /etc/xdg/autostart/piwiz.desktop
+log "disabled the interactive first-boot user dialog"
+
 # --- sshd hardening ----------------------------------------------------------
 # Not restarted here: this boot ends in a reboot anyway.
 install -d -m 0755 /etc/ssh/sshd_config.d
@@ -118,10 +136,14 @@ systemctl enable rasputin-provision.service >/dev/null 2>&1 || fail "cannot enab
 log "identity and provision services installed"
 
 build_id=$(cat "$BOOT/rasputin-build-id" 2>/dev/null || echo unknown)
+# prepared_at comes from the build host: a Pi has no real-time clock, and
+# firstrun runs before NTP has synced, so `date` here would report the
+# image's fake-hwclock date (months stale) rather than today.
 cat > /etc/rasputin-release <<RELEASE
 build_id=$build_id
 base={{.BaseImage}}
-baked_at=$(date -Is 2>/dev/null || echo unknown)
+prepared_at={{.PreparedAt}}
+first_boot_at=$(date -Is 2>/dev/null || echo unknown)
 RELEASE
 log "wrote /etc/rasputin-release (build_id=$build_id)"
 
