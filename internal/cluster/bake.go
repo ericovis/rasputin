@@ -145,6 +145,8 @@ func (c *Cluster) Bake(ctx context.Context, srv *server.Server) (*BakeResult, er
 		return nil, fmt.Errorf("the golden image was captured, but the builder came back wrong: %w", err)
 	}
 	c.Log("%s: healthy (%s, build %s)", builder.Name, check.Hostname, check.BuildID)
+	// The builder was sealed and regenerated its host keys on the way back.
+	c.PurgeKnownHosts(*builder, back.Host())
 
 	return &BakeResult{Meta: meta, Duration: time.Since(start)}, nil
 }

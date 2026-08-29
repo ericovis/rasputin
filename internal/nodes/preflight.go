@@ -10,6 +10,10 @@ import (
 // Bookworm and later.
 const BootMount = "/boot/firmware"
 
+// SudoPasswordEnv mirrors config.SudoPasswordEnv, named here so preflight
+// messages can point at it without importing the config package.
+const SudoPasswordEnv = "RASPUTIN_SUDO_PASSWORD"
+
 // Check is one preflight condition.
 type Check struct {
 	Name   string
@@ -78,13 +82,15 @@ func RunPreflight(conn Conn, node string, recoverySize int64) Preflight {
 		Detail: detail(mountErr, BootMount+" is a mountpoint", ""),
 	})
 
-	// -n makes sudo fail rather than wait for a password we cannot supply.
-	_, sudoErr := conn.Output("sudo -n true")
+	// Sudo() takes the passwordless path when the node allows it and the
+	// password path when the config supplies one, so this one check covers
+	// both. `-n` under the hood means a node that needs a password fails
+	// fast rather than hanging on a prompt nobody can answer.
+	_, sudoErr := conn.Sudo("true")
 	p.Checks = append(p.Checks, Check{
-		Name: "passwordless sudo",
-		OK:   sudoErr == nil,
-		Detail: detail(sudoErr, "sudo -n works",
-			"run: echo '"+conn.User()+" ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/"+conn.User()),
+		Name:   "sudo",
+		OK:     sudoErr == nil,
+		Detail: detail(sudoErr, "works", sudoHint(sudoErr, conn.User())),
 	})
 
 	freeOut, freeErr := conn.Output("df -k --output=avail " + BootMount + " | tail -1")
@@ -105,6 +111,17 @@ func RunPreflight(conn Conn, node string, recoverySize int64) Preflight {
 	})
 
 	return p
+}
+
+// sudoHint suggests a remedy, but only one the operator has not already
+// tried: a rejected password needs a better password, not a lecture about
+// the config setting that is plainly already in effect.
+func sudoHint(err error, user string) string {
+	if err != nil && strings.Contains(err.Error(), "rejected") {
+		return "check the password in $" + SudoPasswordEnv
+	}
+	return "grant it with: echo '" + user + " ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/" +
+		user + "  — or set ssh.sudo: password in rasputin.yaml"
 }
 
 func detail(err error, ok, hint string) string {

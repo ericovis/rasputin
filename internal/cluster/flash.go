@@ -117,7 +117,11 @@ func (c *Cluster) flashOne(ctx context.Context, srv *server.Server, img Image, m
 	res.Duration = time.Since(start)
 	if err := c.verifyClone(back, node, meta, &res); err != nil {
 		res.Err = err
+		return res
 	}
+	// The node now presents brand new host keys. Drop the operator's stale
+	// known_hosts entries so their own `ssh` keeps working.
+	c.PurgeKnownHosts(node, back.Host())
 	return res
 }
 

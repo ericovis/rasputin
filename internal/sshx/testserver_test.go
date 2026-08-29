@@ -51,7 +51,10 @@ func newTestSSHD(t *testing.T, acceptAs string) *testSSHD {
 		HostKey:  signer.PublicKey(),
 		AcceptAs: acceptAs,
 		Stdin:    map[string]string{},
-		Replies:  map[string]string{},
+		// A node with passwordless sudo is the normal case, so the probe
+		// succeeds by default; tests that want the password path call
+		// srv.fail("sudo -n true", 1).
+		Replies:  map[string]string{"sudo -n true": ""},
 		Fails:    map[string]int{},
 		listener: ln,
 	}

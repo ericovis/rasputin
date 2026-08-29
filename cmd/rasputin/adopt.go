@@ -64,7 +64,7 @@ func rebootedNote(rebooted bool) string {
 // setup builds the cluster and resolves the node arguments, the two things
 // every node-touching command starts with.
 func setup(cfg *config.Config, args []string) (*cluster.Cluster, []config.Node, error) {
-	c, err := cluster.New(cfg, func(format string, a ...any) { fmt.Printf(format+"\n", a...) })
+	c, err := newCluster(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -73,4 +73,14 @@ func setup(cfg *config.Config, args []string) (*cluster.Cluster, []config.Node, 
 		return nil, nil, err
 	}
 	return c, targets, nil
+}
+
+// newCluster builds a Cluster, obtaining a sudo password first if the config
+// asks for one.
+func newCluster(cfg *config.Config) (*cluster.Cluster, error) {
+	pw, err := sudoPassword(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return cluster.NewWithSudo(cfg, pw, func(format string, a ...any) { fmt.Printf(format+"\n", a...) })
 }

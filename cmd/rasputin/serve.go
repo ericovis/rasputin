@@ -24,7 +24,7 @@ func runServe(cfg *config.Config, args []string) error {
 		return err
 	}
 
-	c, err := cluster.New(cfg, func(format string, a ...any) { fmt.Printf(format+"\n", a...) })
+	c, err := newCluster(cfg)
 	if err != nil {
 		return err
 	}

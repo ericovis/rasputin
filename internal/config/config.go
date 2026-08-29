@@ -62,7 +62,29 @@ type Image struct {
 type SSH struct {
 	Key   string   `yaml:"key"`
 	Users []string `yaml:"users"`
+	// Sudo is how the CLI escalates on a node: SudoPasswordless (the
+	// default) requires NOPASSWD and fails fast without it, while
+	// SudoPassword falls back to `sudo -S` for nodes that have not been
+	// granted it.
+	//
+	// The password itself is deliberately NOT a config field: this file is
+	// committed to git. It comes from $RASPUTIN_SUDO_PASSWORD or a one-time
+	// prompt instead.
+	Sudo string `yaml:"sudo"`
 }
+
+// Sudo modes.
+const (
+	SudoPasswordless = "passwordless"
+	SudoPassword     = "password"
+)
+
+// SudoPasswordEnv is the environment variable the sudo password is read
+// from, so unattended runs need no prompt.
+const SudoPasswordEnv = "RASPUTIN_SUDO_PASSWORD"
+
+// NeedsSudoPassword reports whether the CLI should obtain a sudo password.
+func (s SSH) NeedsSudoPassword() bool { return s.Sudo == SudoPassword }
 
 // Provision describes the state firstrun.sh bakes into the golden image.
 type Provision struct {
@@ -126,6 +148,9 @@ func (c *Config) applyDefaults() {
 	if c.Image.RootfsSizeGB == 0 {
 		c.Image.RootfsSizeGB = DefaultRootfsSizeGB
 	}
+	if c.SSH.Sudo == "" {
+		c.SSH.Sudo = SudoPasswordless
+	}
 	if c.Timeouts.FlashMinutes == 0 {
 		c.Timeouts.FlashMinutes = DefaultFlashMinutes
 	}
@@ -186,6 +211,12 @@ func (c *Config) Validate() error {
 	}
 	if c.SSH.Key == "" {
 		return fmt.Errorf("config: ssh.key is required")
+	}
+	switch c.SSH.Sudo {
+	case SudoPasswordless, SudoPassword:
+	default:
+		return fmt.Errorf("config: ssh.sudo is %q, want %q or %q",
+			c.SSH.Sudo, SudoPasswordless, SudoPassword)
 	}
 	if p := c.Server.ListenPort(); p < 0 || p > 65535 {
 		return fmt.Errorf("config: server.port %d out of range 0-65535", p)

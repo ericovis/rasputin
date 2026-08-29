@@ -27,7 +27,7 @@ func runBake(cfg *config.Config, args []string) error {
 		return fmt.Errorf("bake takes no arguments; the builder is %s from the config", cfg.Builder)
 	}
 
-	c, err := cluster.New(cfg, func(format string, a ...any) { fmt.Printf(format+"\n", a...) })
+	c, err := newCluster(cfg)
 	if err != nil {
 		return err
 	}

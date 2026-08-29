@@ -67,12 +67,33 @@ go run ./cmd/rasputin status       # read-only health table
 ```
 
 Requirements: Go 1.27 on the build host, an SSH key that reaches the nodes
-(loaded in your agent if it has a passphrase), and **passwordless sudo for
-your SSH user on every node** — the CLI writes to the boot partition and
-reboots. Grant it once per node with:
+(loaded in your agent if it has a passphrase), and a way to run `sudo` on
+them — the CLI writes to the boot partition and reboots.
+
+### sudo
+
+`ssh.sudo` in `rasputin.yaml` picks how the CLI escalates:
+
+```yaml
+ssh:
+  sudo: passwordless   # default: require NOPASSWD, fail fast without it
+  # sudo: password     # fall back to `sudo -S` on nodes that lack it
+```
+
+`passwordless` is the better setup — grant it once per node and the CLI
+never needs a secret at all:
 
 ```sh
 ssh <user>@<node> "echo '<user> ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/<user>"
+```
+
+With `sudo: password`, the password is taken from `$RASPUTIN_SUDO_PASSWORD`,
+or prompted for once (without echo) if that is unset. **It is deliberately
+not a config field**: `rasputin.yaml` is committed to git, and a password in
+git is a password published.
+
+```sh
+RASPUTIN_SUDO_PASSWORD="$(pass show cluster/sudo)" go run ./cmd/rasputin adopt all
 ```
 
 ## Commands
@@ -149,8 +170,13 @@ restore the backup `adopt` always makes first:
 cp /Volumes/bootfs/config.txt.pre-rasputin /Volumes/bootfs/config.txt
 ```
 
-**`REMOTE HOST IDENTIFICATION HAS CHANGED` after a flash.** Expected — see
-below. `ssh-keygen -R <node>` clears the stale entry.
+**`REMOTE HOST IDENTIFICATION HAS CHANGED` after a flash.** The CLI clears
+your `known_hosts` entries itself after a successful flash, so you should not
+normally see this. If you do — a flash that failed late, or a node reached by
+an address the CLI has not seen — `ssh-keygen -R <host>` clears it.
+
+**`sudo needs a password and none was supplied`.** The node has no NOPASSWD
+rule. Either grant one (see *sudo* above) or set `ssh.sudo: password`.
 
 ## Security trade-offs
 
@@ -162,8 +188,10 @@ you do not own.
   node generates its own on first boot. The CLI therefore cannot use
   `known_hosts`: it pins each node's key in `out/state.json` on first sight
   and drops the pin itself whenever *it* is the one replacing the system. A
-  key that changes at any other time is reported as an error. Your own `ssh`
-  client will need `ssh-keygen -R` after a flash.
+  key that changes at any other time is reported as an error. After a
+  successful `flash` or `bake` the CLI also runs `ssh-keygen -R` against your
+  own `~/.ssh/known_hosts` for that node's names and addresses, so plain
+  `ssh` keeps working; `ssh-keygen` writes its usual `.old` backup.
 - **Node identity is verified by MAC, not by name.** Every connection reads
   `/sys/class/net/eth0/address` and refuses to act on a machine whose MAC
   does not match the config. This is not paranoia: this cluster has had two

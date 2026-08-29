@@ -56,7 +56,7 @@ func TestPreflightCatchesMissingSudo(t *testing.T) {
 		t.Error("preflight passed a node without passwordless sudo")
 	}
 	f := p.Failures()[0]
-	if f.Name != "passwordless sudo" {
+	if f.Name != "sudo" {
 		t.Fatalf("failure = %+v", f)
 	}
 	// The message must tell the operator exactly how to fix it: this is the
@@ -92,7 +92,7 @@ func TestPreflightCatchesAnUnmountedBootPartition(t *testing.T) {
 func TestPreflightStringListsEveryCheck(t *testing.T) {
 	p := RunPreflight(&fakeConn{user: "berry", replies: healthyReplies()}, "n", recoverySize)
 	s := p.String()
-	for _, want := range []string{"architecture", "boot partition", "passwordless sudo", "ok"} {
+	for _, want := range []string{"architecture", "boot partition", "sudo", "ok"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("String() is missing %q:\n%s", want, s)
 		}

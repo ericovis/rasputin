@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -49,6 +50,10 @@ type Dialer struct {
 	Keys HostKeyStore
 	// Port overrides the SSH port; 0 means Port (22). Only tests set it.
 	Port int
+	// SudoPassword, when set, lets Sudo fall back to `sudo -S` on nodes
+	// that have not been granted passwordless sudo. Empty means the CLI
+	// requires NOPASSWD, which is the default.
+	SudoPassword string
 }
 
 // New builds a Dialer from the cluster config.
@@ -91,6 +96,12 @@ func New(cfg *config.Config, keys HostKeyStore) (*Dialer, error) {
 	}, nil
 }
 
+// WithSudoPassword returns d with a sudo password attached.
+func (d *Dialer) WithSudoPassword(pw string) *Dialer {
+	d.SudoPassword = pw
+	return d
+}
+
 // AgentSigners returns the keys held by the running SSH agent, or an error
 // explaining why there are none.
 func AgentSigners() ([]ssh.Signer, error) {
@@ -122,6 +133,13 @@ type Client struct {
 	user string
 	host string
 	node string
+
+	sudoPassword string
+	// sudoOnce guards the one-time probe of whether this node needs a
+	// password; the answer cannot change during a session.
+	sudoOnce    sync.Once
+	sudoNeedsPw bool
+	sudoErr     error
 }
 
 // User is the account that authenticated.
@@ -163,7 +181,7 @@ func (d *Dialer) Dial(ctx context.Context, node, host string) (*Client, error) {
 		}
 		conn, err := dialContext(ctx, addr, cfg, timeout)
 		if err == nil {
-			return &Client{conn: conn, user: user, host: host, node: node}, nil
+			return &Client{conn: conn, user: user, host: host, node: node, sudoPassword: d.SudoPassword}, nil
 		}
 		errs = append(errs, fmt.Sprintf("%s@%s: %v", user, host, err))
 		// A host-key problem is the same for every user, and a wrong key is
@@ -270,11 +288,84 @@ func (c *Client) Run(cmd string) (Result, error) {
 	return res, nil
 }
 
-// Sudo runs a command as root without a password prompt. Every node the CLI
-// manages must allow this; `-n` makes a node that does not fail immediately
-// instead of hanging on a password prompt.
+// Sudo runs a command as root.
+//
+// The fast path is passwordless: `sudo -n` fails immediately rather than
+// hanging on a prompt nobody can answer. If the node has not been granted
+// NOPASSWD and a sudo password was supplied, it falls back to feeding the
+// password on stdin instead.
 func (c *Client) Sudo(cmd string) (Result, error) {
-	return c.Run("sudo -n " + cmd)
+	needsPw, err := c.sudoNeedsPassword()
+	if err != nil {
+		return Result{}, err
+	}
+	if !needsPw {
+		return c.Run("sudo -n " + cmd)
+	}
+	return c.runSudoWithPassword(cmd, nil)
+}
+
+// sudoNeedsPassword probes once whether this node accepts passwordless sudo.
+func (c *Client) sudoNeedsPassword() (bool, error) {
+	c.sudoOnce.Do(func() {
+		if _, err := c.Run("sudo -n true"); err == nil {
+			c.sudoNeedsPw = false
+			return
+		}
+		if c.sudoPassword == "" {
+			c.sudoErr = fmt.Errorf(
+				"%s@%s: sudo needs a password and none was supplied. Either grant passwordless sudo "+
+					"(echo '%s ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/%s) or set ssh.sudo: password "+
+					"in rasputin.yaml", c.user, c.host, c.user, c.user)
+			return
+		}
+		c.sudoNeedsPw = true
+	})
+	return c.sudoNeedsPw, c.sudoErr
+}
+
+// runSudoWithPassword feeds the sudo password on stdin, followed by any data
+// the command itself should read.
+//
+// `-k` discards any cached credential so sudo ALWAYS consumes exactly one
+// line from stdin. Without it, a cached timestamp would make sudo skip the
+// read and the password line would be delivered to the command as data —
+// which, for a file push, means writing the password into the file.
+// `-p ”` keeps the prompt off stderr.
+func (c *Client) runSudoWithPassword(cmd string, data []byte) (Result, error) {
+	sess, err := c.conn.NewSession()
+	if err != nil {
+		return Result{}, err
+	}
+	defer sess.Close()
+
+	stdin := make([]byte, 0, len(c.sudoPassword)+1+len(data))
+	stdin = append(stdin, c.sudoPassword...)
+	stdin = append(stdin, '\n')
+	stdin = append(stdin, data...)
+
+	var stdout, stderr bytes.Buffer
+	sess.Stdin = bytes.NewReader(stdin)
+	sess.Stdout = &stdout
+	sess.Stderr = &stderr
+
+	full := "sudo -k -S -p '' " + cmd
+	runErr := sess.Run(full)
+	res := Result{Stdout: stdout.String(), Stderr: stderr.String()}
+
+	var exitErr *ssh.ExitError
+	if errors.As(runErr, &exitErr) {
+		res.ExitCode = exitErr.ExitStatus()
+		msg := strings.TrimSpace(res.Stderr)
+		if strings.Contains(msg, "incorrect password") || strings.Contains(msg, "Sorry, try again") {
+			return res, fmt.Errorf("%s@%s: the sudo password was rejected", c.user, c.host)
+		}
+		return res, fmt.Errorf("%s@%s: %q exited %d: %s", c.user, c.host, cmd, res.ExitCode, msg)
+	}
+	if runErr != nil {
+		return res, fmt.Errorf("%s@%s: running %q: %w", c.user, c.host, cmd, runErr)
+	}
+	return res, nil
 }
 
 // Output runs a command and returns its trimmed stdout.
@@ -289,6 +380,20 @@ func (c *Client) Output(cmd string) (string, error) {
 // subsystem enabled and would still not write to root-owned paths, while
 // tee works on any stock Raspberry Pi OS.
 func (c *Client) Push(path string, data []byte, mode string) error {
+	needsPw, err := c.sudoNeedsPassword()
+	if err != nil {
+		return err
+	}
+	if needsPw {
+		dir := path[:strings.LastIndex(path, "/")+1]
+		inner := shellQuote(fmt.Sprintf("mkdir -p %s && cat > %s && chmod %s %s && sync",
+			shellQuote(dir), shellQuote(path), mode, shellQuote(path)))
+		if _, err := c.runSudoWithPassword("sh -c "+inner, data); err != nil {
+			return fmt.Errorf("pushing %s: %w", path, err)
+		}
+		return nil
+	}
+
 	sess, err := c.conn.NewSession()
 	if err != nil {
 		return err
@@ -301,10 +406,9 @@ func (c *Client) Push(path string, data []byte, mode string) error {
 	sess.Stdout = nil
 
 	dir := path[:strings.LastIndex(path, "/")+1]
-	cmd := fmt.Sprintf("sudo -n sh -c %s",
-		shellQuote(fmt.Sprintf("mkdir -p %s && cat > %s && chmod %s %s && sync",
-			shellQuote(dir), shellQuote(path), mode, shellQuote(path))))
-	if err := sess.Run(cmd); err != nil {
+	inner := shellQuote(fmt.Sprintf("mkdir -p %s && cat > %s && chmod %s %s && sync",
+		shellQuote(dir), shellQuote(path), mode, shellQuote(path)))
+	if err := sess.Run("sudo -n sh -c " + inner); err != nil {
 		return fmt.Errorf("pushing %s to %s@%s: %w: %s", path, c.user, c.host, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
@@ -312,7 +416,7 @@ func (c *Client) Push(path string, data []byte, mode string) error {
 
 // Fetch reads a remote file, using sudo so root-owned files are readable.
 func (c *Client) Fetch(path string) ([]byte, error) {
-	res, err := c.Run("sudo -n cat " + shellQuote(path))
+	res, err := c.Sudo("cat " + shellQuote(path))
 	if err != nil {
 		return nil, err
 	}

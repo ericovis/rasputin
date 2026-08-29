@@ -27,7 +27,11 @@ func runStatus(cfg *config.Config, args []string) error {
 
 	// Status is chatty by nature; keep the resolver quiet so the table is
 	// the output, not a scroll of connection attempts.
-	c, err := cluster.New(cfg, nil)
+	pw, err := sudoPassword(cfg)
+	if err != nil {
+		return err
+	}
+	c, err := cluster.NewWithSudo(cfg, pw, nil)
 	if err != nil {
 		return err
 	}

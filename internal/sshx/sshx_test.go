@@ -169,12 +169,12 @@ func TestRunCapturesOutput(t *testing.T) {
 
 func TestRunSurfacesTheExitCode(t *testing.T) {
 	srv := newTestSSHD(t, "berry")
-	srv.fail("sudo -n true", 1)
+	srv.fail("sudo -n false", 1)
 	d := dialerFor(t, srv, []string{"berry"}, nil)
 	c, _ := d.Dial(context.Background(), "n", "127.0.0.1")
 	defer c.Close()
 
-	res, err := c.Sudo("true")
+	res, err := c.Sudo("false")
 	if err == nil {
 		t.Fatal("a failing command reported success")
 	}
@@ -184,9 +184,29 @@ func TestRunSurfacesTheExitCode(t *testing.T) {
 	if !strings.Contains(err.Error(), "exited 1") {
 		t.Errorf("err = %v", err)
 	}
-	if ran := srv.ran(); ran[0] != "sudo -n true" {
-		t.Errorf("Sudo ran %q, want it prefixed with sudo -n", ran[0])
+	if !containsCmd(srv.ran(), "sudo -n false") {
+		t.Errorf("Sudo ran %v, want the command prefixed with sudo -n", srv.ran())
 	}
+}
+
+// containsCmd reports whether the server saw an exact command.
+func containsCmd(ran []string, want string) bool {
+	for _, c := range ran {
+		if c == want {
+			return true
+		}
+	}
+	return false
+}
+
+// pushCmdFrom returns the command that carried a file push.
+func pushCmdFrom(ran []string) string {
+	for _, c := range ran {
+		if strings.Contains(c, "cat > ") {
+			return c
+		}
+	}
+	return ""
 }
 
 func TestPushSendsContentAsRoot(t *testing.T) {
@@ -199,11 +219,10 @@ func TestPushSendsContentAsRoot(t *testing.T) {
 	if err := c.Push("/boot/firmware/config.txt", content, "0644"); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
-	ran := srv.ran()
-	if len(ran) != 1 {
-		t.Fatalf("ran %v, want one command", ran)
+	cmd := pushCmdFrom(srv.ran())
+	if cmd == "" {
+		t.Fatalf("no push command ran; got %v", srv.ran())
 	}
-	cmd := ran[0]
 	for _, want := range []string{"sudo -n sh -c", "mkdir -p", "/boot/firmware/config.txt", "chmod 0644", "sync"} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("push command %q is missing %q", cmd, want)
@@ -224,7 +243,10 @@ func TestPushSurfacesFailures(t *testing.T) {
 	if err := c.Push("/x", []byte("data"), "0644"); err != nil {
 		t.Fatalf("unexpected failure: %v", err)
 	}
-	cmd := srv.ran()[0]
+	cmd := pushCmdFrom(srv.ran())
+	if cmd == "" {
+		t.Fatalf("no push command ran; got %v", srv.ran())
+	}
 	srv.fail(cmd, 1)
 	if err := c.Push("/x", []byte("data"), "0644"); err == nil {
 		t.Error("Push reported success for a failing command")
@@ -343,5 +365,135 @@ func TestDialRespectsContextCancellation(t *testing.T) {
 	cancel()
 	if _, err := d.Dial(ctx, "n", "127.0.0.1"); err == nil {
 		t.Error("Dial ignored a cancelled context")
+	}
+}
+
+func TestSudoUsesThePasswordlessPathWhenAvailable(t *testing.T) {
+	srv := newTestSSHD(t, "berry")
+	d := dialerFor(t, srv, []string{"berry"}, nil)
+	d.SudoPassword = "hunter2"
+	c, err := d.Dial(context.Background(), "n", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	if _, err := c.Sudo("true"); err != nil {
+		t.Fatalf("Sudo: %v", err)
+	}
+	for _, cmd := range srv.ran() {
+		if strings.Contains(cmd, "-S") {
+			t.Errorf("used the password path on a node with NOPASSWD: %q", cmd)
+		}
+		if strings.Contains(cmd, "hunter2") {
+			t.Errorf("the password appeared in a command line: %q", cmd)
+		}
+	}
+}
+
+func TestSudoFallsBackToThePasswordPath(t *testing.T) {
+	srv := newTestSSHD(t, "berry")
+	srv.fail("sudo -n true", 1) // this node has no NOPASSWD
+	d := dialerFor(t, srv, []string{"berry"}, nil)
+	d.SudoPassword = "hunter2"
+	c, err := d.Dial(context.Background(), "n", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	if _, err := c.Sudo("systemctl reboot"); err != nil {
+		t.Fatalf("Sudo: %v", err)
+	}
+	want := "sudo -k -S -p '' systemctl reboot"
+	var found bool
+	for _, cmd := range srv.ran() {
+		if cmd == want {
+			found = true
+			// The password goes on stdin, never on the command line.
+			if got := srv.stdinFor(cmd); got != "hunter2\n" {
+				t.Errorf("stdin = %q, want the password followed by a newline", got)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("commands were %v, want one to be %q", srv.ran(), want)
+	}
+}
+
+func TestSudoProbesOnlyOnce(t *testing.T) {
+	srv := newTestSSHD(t, "berry")
+	srv.fail("sudo -n true", 1)
+	d := dialerFor(t, srv, []string{"berry"}, nil)
+	d.SudoPassword = "pw"
+	c, _ := d.Dial(context.Background(), "n", "127.0.0.1")
+	defer c.Close()
+
+	for i := 0; i < 3; i++ {
+		if _, err := c.Sudo("true"); err != nil {
+			t.Fatalf("Sudo %d: %v", i, err)
+		}
+	}
+	var probes int
+	for _, cmd := range srv.ran() {
+		if cmd == "sudo -n true" {
+			probes++
+		}
+	}
+	if probes != 1 {
+		t.Errorf("probed sudo %d times, want 1", probes)
+	}
+}
+
+func TestSudoWithoutAPasswordExplainsHowToFixIt(t *testing.T) {
+	srv := newTestSSHD(t, "berry")
+	srv.fail("sudo -n true", 1)
+	d := dialerFor(t, srv, []string{"berry"}, nil) // no SudoPassword
+	c, _ := d.Dial(context.Background(), "n", "127.0.0.1")
+	defer c.Close()
+
+	_, err := c.Sudo("true")
+	if err == nil {
+		t.Fatal("Sudo succeeded on a node needing a password with none supplied")
+	}
+	for _, want := range []string{"NOPASSWD", "ssh.sudo: password"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to mention %q", err, want)
+		}
+	}
+}
+
+// TestPushWithSudoPasswordKeepsThePasswordOutOfTheFile guards the trap in
+// the password path: sudo -S consumes one line of stdin, and the rest is the
+// file content. If sudo skipped that read — because of a cached credential —
+// the password itself would be written into the file. `-k` is what prevents
+// that, so this test pins both the flag and the stdin framing.
+func TestPushWithSudoPasswordKeepsThePasswordOutOfTheFile(t *testing.T) {
+	srv := newTestSSHD(t, "berry")
+	srv.fail("sudo -n true", 1)
+	d := dialerFor(t, srv, []string{"berry"}, nil)
+	d.SudoPassword = "hunter2"
+	c, _ := d.Dial(context.Background(), "n", "127.0.0.1")
+	defer c.Close()
+
+	content := []byte("initramfs recovery.gz followkernel\n")
+	if err := c.Push("/boot/firmware/config.txt", content, "0644"); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+
+	var pushCmd string
+	for _, cmd := range srv.ran() {
+		if strings.Contains(cmd, "config.txt") {
+			pushCmd = cmd
+		}
+	}
+	if pushCmd == "" {
+		t.Fatalf("no push command ran; got %v", srv.ran())
+	}
+	if !strings.HasPrefix(pushCmd, "sudo -k -S -p '' ") {
+		t.Errorf("push command %q must use -k so sudo always consumes the password line", pushCmd)
+	}
+	if got, want := srv.stdinFor(pushCmd), "hunter2\n"+string(content); got != want {
+		t.Errorf("stdin = %q, want the password line then the content", got)
 	}
 }

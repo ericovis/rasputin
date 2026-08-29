@@ -53,6 +53,12 @@ type Cluster struct {
 
 // New wires up the state cache, the SSH dialer and the node resolver.
 func New(cfg *config.Config, logf func(format string, args ...any)) (*Cluster, error) {
+	return NewWithSudo(cfg, "", logf)
+}
+
+// NewWithSudo is New with a sudo password for clusters whose nodes have not
+// been granted passwordless sudo.
+func NewWithSudo(cfg *config.Config, sudoPassword string, logf func(format string, args ...any)) (*Cluster, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
@@ -64,6 +70,7 @@ func New(cfg *config.Config, logf func(format string, args ...any)) (*Cluster, e
 	if err != nil {
 		return nil, err
 	}
+	dialer.SudoPassword = sudoPassword
 	return &Cluster{
 		Cfg:   cfg,
 		State: st,

@@ -104,3 +104,44 @@ func TestLoadRepoConfig(t *testing.T) {
 		t.Errorf("packages = %v", c.Provision.Packages)
 	}
 }
+
+func TestSudoModeDefaultsAndValidation(t *testing.T) {
+	c, err := Parse([]byte(minimal), "test.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SSH.Sudo != SudoPasswordless {
+		t.Errorf("ssh.sudo = %q, want %q by default", c.SSH.Sudo, SudoPasswordless)
+	}
+	if c.SSH.NeedsSudoPassword() {
+		t.Error("the default mode should not ask for a password")
+	}
+
+	withPw := strings.Replace(minimal, "  users: [berry, ericovis]", "  users: [berry, ericovis]\n  sudo: password", 1)
+	c, err = Parse([]byte(withPw), "test.yaml")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !c.SSH.NeedsSudoPassword() {
+		t.Errorf("ssh.sudo = %q should ask for a password", c.SSH.Sudo)
+	}
+
+	bad := strings.Replace(minimal, "  users: [berry, ericovis]", "  users: [berry, ericovis]\n  sudo: yolo", 1)
+	if _, err := Parse([]byte(bad), "test.yaml"); err == nil {
+		t.Error("an unknown ssh.sudo mode was accepted")
+	}
+}
+
+// TestConfigHasNoPasswordField guards the decision that a sudo password must
+// never live in rasputin.yaml, which is committed to git.
+func TestConfigHasNoPasswordField(t *testing.T) {
+	yamlWithSecret := strings.Replace(minimal,
+		"  users: [berry, ericovis]", "  users: [berry, ericovis]\n  sudo_password: hunter2", 1)
+	_, err := Parse([]byte(yamlWithSecret), "test.yaml")
+	if err == nil {
+		t.Fatal("rasputin.yaml accepted a sudo_password field; secrets must not be storable here")
+	}
+	if !strings.Contains(err.Error(), "sudo_password") {
+		t.Errorf("err = %v, want it to name the rejected field", err)
+	}
+}

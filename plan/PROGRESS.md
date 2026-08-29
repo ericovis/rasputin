@@ -430,3 +430,35 @@ duplicate hostname `rasputin002`; flashing it fixes that permanently.
   stderr only, does not affect the CLI's parsing).
 - An in-agent debug HTTP endpoint would make a node stuck in recovery
   inspectable without the console.
+
+- 2026-08-29 · post-plan · Two owner-requested changes.
+  **1. `ssh.sudo` config parameter.** `passwordless` (default) keeps the old
+  behaviour: require NOPASSWD and fail fast. `password` falls back to
+  `sudo -S` for nodes that were never granted it. The password itself is
+  deliberately NOT a config field — rasputin.yaml is committed, and a
+  password in git is a password published — so it comes from
+  $RASPUTIN_SUDO_PASSWORD or a no-echo prompt. A test asserts that a
+  `sudo_password:` key in the YAML is *rejected*, so the decision cannot be
+  quietly undone later.
+  Implementation notes: the client probes `sudo -n true` once per connection
+  and caches the answer. The password path uses `sudo -k -S -p ''` — `-k` is
+  load-bearing, not decoration: it discards any cached credential so sudo
+  ALWAYS consumes exactly one line of stdin. Without it a cached timestamp
+  would make sudo skip the read, and for a file push the password line would
+  be written into the file. TestPushWithSudoPasswordKeepsThePasswordOutOfThe-
+  File pins that. Preflight's check is now just "sudo" (either path counts)
+  and its hint adapts: a rejected password is told to check the env var, not
+  lectured about a config setting already in effect.
+  Verified against live hardware: `adopt rasputin002` with a deliberately
+  wrong password reaches the node, has the password rejected, and stops at
+  preflight without modifying anything.
+  **2. known_hosts cleanup after a reflash.** A successful `flash` or `bake`
+  now runs `ssh-keygen -R` on the build host for the node's name, its mDNS
+  name and the address it was reached on, so the operator's own `ssh` keeps
+  working instead of hitting REMOTE HOST IDENTIFICATION HAS CHANGED.
+  Entirely best effort — a missing known_hosts or a missing ssh-keygen never
+  turns a successful flash into a failure — and ssh-keygen writes its own
+  .old backup.
+  Note: rasputin002/003/004 still refuse `sudo -n true` as of 2026-08-29
+  05:0x, so the owner's sudoers grant did not take effect. T21 can now
+  proceed either by fixing that or by running with ssh.sudo: password.
