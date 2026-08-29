@@ -11,6 +11,27 @@ log() {
     echo "rasputin: $*"
 }
 
+ROOTFS_CAP_GB={{.RootfsSizeGB}}
+
+# --- fit check: refuse to capture a rootfs that does not fit the cap ---------
+# This runs FIRST, before anything is stripped: an aborted seal leaves the
+# builder exactly as provisioned — bootable, reachable, host keys and
+# machine-id intact — so the fix is to raise image.rootfs_size_gb or trim
+# provision.packages and simply re-run bake. The measurement still includes
+# the apt lists and journal this script would have cleaned (~300 MB); the
+# margin covers that.
+cap_bytes=$((ROOTFS_CAP_GB * 1024 * 1024 * 1024))
+margin_bytes=$((512 * 1024 * 1024))
+used_kb=$(df -Pk / | awk 'NR==2 {print $3}')
+[ -n "$used_kb" ] || { echo "rasputin-seal: ABORT: cannot measure / usage (df -Pk / gave no row). Nothing was changed." >&2; exit 1; }
+used_bytes=$((used_kb * 1024))
+if [ "$used_bytes" -gt "$((cap_bytes - margin_bytes))" ]; then
+    echo "rasputin-seal: ABORT: / uses ${used_bytes} bytes; the ${ROOTFS_CAP_GB} GiB cap allows at most $((cap_bytes - margin_bytes)) (cap minus a 512 MiB margin). Nothing was changed. Raise image.rootfs_size_gb or trim provision.packages, re-run prepare, and bake again." >&2
+    log "seal: ABORT: rootfs does not fit the ${ROOTFS_CAP_GB} GiB cap (used ${used_bytes} bytes)"
+    exit 1
+fi
+log "seal: rootfs uses ${used_bytes} of ${cap_bytes} capped bytes; fits with >=512 MiB margin"
+
 log "seal: removing SSH host keys"
 rm -f /etc/ssh/ssh_host_*
 
@@ -30,6 +51,15 @@ log "seal: clearing logs, apt lists and shell history"
 rm -rf /var/lib/apt/lists/* /var/log/*.gz /var/log/*.1 2>/dev/null || true
 find /var/log -type f -name '*.log' -exec truncate -s0 {} + 2>/dev/null || true
 rm -f /root/.bash_history /home/*/.bash_history 2>/dev/null || true
+
+# Arm the one-shot clone grow: rasputin-identity grows the rootfs to the
+# whole card on the next real boot only when this marker exists. It is
+# created here, immediately before capture, precisely so it gets baked into
+# the golden image — the builder never sees it between firstrun and seal, so
+# captures stay at the cap.
+log "seal: arming the clone rootfs grow"
+mkdir -p /var/lib/rasputin
+: > /var/lib/rasputin/grow-rootfs
 
 # Zeroing free space would make the capture compress far better, but on a
 # 32 GB card it also writes tens of gigabytes to the flash. Not worth it.
