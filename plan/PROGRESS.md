@@ -205,3 +205,19 @@
   offline — that blocker was wrong and is now marked resolved.
   out/vanilla-custom.img.zst rebuilt today (735,551,527 B) and the T11
   image-content gate re-run and passing.
+
+- 2026-08-28 · T17 · **HW: adopted rasputin001 — the Go agent ran as PID 1 on
+  real hardware for the first time and handed off correctly.** `adopt
+  rasputin001` took **53 s** end to end including the reboot. Verified on the
+  node: uptime reset to 0 min (it really rebooted), `dmesg` shows
+  `rasputin: recovery agent 20260828T235727Z-2d5642 starting (pid 1)` at
+  2.28 s and `rasputin: mode=normal mac=unknown url=` at 2.58 s, then systemd
+  took over at 4.69 s; config.txt carries the managed block with the
+  initramfs line and both dtoverlays; auto_initramfs is gone;
+  config.txt.pre-rasputin (1272 B, the pristine stock file) exists;
+  recovery.gz (2,702,889 B) and nodes.conf (165 B) are installed;
+  `systemctl is-system-running` = running with no failed units.
+  Observation: the early log line says `mac=unknown` because at 2.5 s in the
+  initramfs the eth0 driver has not probed yet and /sys/class/net/eth0 does
+  not exist. Cosmetic only — the network modes read the MAC after
+  NetworkUp(), so capture/progress attribution is unaffected.
