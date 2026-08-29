@@ -185,9 +185,29 @@ opens the card.
 
 FAIL → fix on the Mac; nothing was harmed; do not proceed to any gate.
 
-- measured (adopt):
-- measured (dryrun total / bytes / decode rate):
-- measured (A2 rate lines seen):
+**MEASURED 2026-08-29 (Mac clock) — PASS.**
+- adopt: **45.8 s** (band 40-55 s). Agent log confirmed the merged build:
+  `rasputin: recovery agent 20260829T152406Z-271c66 starting (pid 1)`.
+- dryrun `-vanilla`: 15:31:04Z -> 15:33:14Z = **2m10s** (band <=3m30s; baseline
+  2m23s). `result: OK attempt=1 2977955840 bytes in 1m13s (40.8 MB/s)` — bytes
+  exact, decode 40.8 MB/s (baseline 40.6). Wire peaked at 10.1 MB/s, at the
+  100 Mbit ceiling as expected. Flag cleared: the node's current dmesg shows
+  `mode=normal`.
+- **DEVIATION — A2 rate lines are NOT observable from the Mac, by design.**
+  P12 identified the format correctly (`written <N> MiB (<R> MB/s)`), but
+  `c.logf` writes only to `/dev/kmsg` (`internal/kmsg/kmsg.go`: "its only
+  durable output channel is the kernel ring buffer"), and every dryrun/flash/
+  capture boot ends in `sys.Reboot()`, which discards that ring buffer. Only
+  the structured `DryrunReport` is persisted to the boot partition
+  (`writeReportAndClearFlag`, `internal/agent/run.go:183`). So the
+  "A2 rate lines visible" check in steps 1, 2 and 3 cannot be satisfied
+  without a serial console on the Pi.
+  **Substitute evidence, which is strictly better:** A2 changes the *rate*,
+  and the rate is reported in the persisted `result:` line and in the bake's
+  Mac-side capture progress. In this dryrun A2 is expected to be neutral
+  (a dryrun never opens the card, so `copyWithProgress` takes the
+  non-`RangeSyncer` fallback) — and it is: 40.6 -> 40.8 MB/s, within noise.
+  A2's real test is the step-3 flash write rate.
 
 ---
 
@@ -288,6 +308,21 @@ with real SSH connections and one of those re-pins the key you just cleared;
 reboot/key ordering in cluster code as a debugging shortcut. If the builder
 wedges at systemd `starting` forever, check `userconfig.service` is still
 masked before suspecting anything else.
+
+**Pre-bake sequence MEASURED 2026-08-29 — all four steps done, in order:**
+1. `rasputin.yaml:6` set to `rootfs_size_gb: 8`. `go test ./internal/provision
+   ./internal/config` still green — cross-lane ruling #1 (assertions derived
+   from config, not a `=4` literal) validated in practice.
+2. full `prepare`: 15:34:36Z -> 15:34:52Z = **16.5 s** (band 11-30 s).
+   `out/vanilla-custom.img.zst` 735,548,295 B.
+3. `rm out/vanilla-custom.img` done — 6.0 GiB free.
+4. build id **`20260829T153436Z-d68089`**; `sha256_recovery`
+   **`fec4728a3c412d756be23ed481846cc0df7d10c1760dc1c217d0c52a7827be74`**,
+   which DIFFERS from the pre-merge `4c6ffd2336ba…` — the merged agent is
+   inside the image.
+
+Pre-bake `status`: 4/4 healthy, all on `20260829T021418Z-66b2f9`,
+rasputin001 up 2 minutes (its post-dryrun reboot).
 
 - measured (total / phases):
 - measured (capture wall / MB/s):
