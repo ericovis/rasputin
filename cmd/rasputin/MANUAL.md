@@ -39,7 +39,7 @@ the identity that matters: every connection verifies
 | `sync -plan` | reads nodes, reads `out/` | **no** | ~5 s |
 | `prepare` | `out/`, `cache/` | no | ~15 s warm, +4 min on first download |
 | `serve` | listens on a port | no (a node only reflashes if *you* write its flag file) | until interrupted |
-| `dryrun` | reboots the node twice, never writes its card | no | ~2 min per node |
+| `dryrun` | reboots the node into the recovery agent and back, never writes its card | no | ~2 min per node |
 | `adopt` | edits the boot partition, reboots once | low: reversible, keeps the OS | ~45 s per node |
 | `bake` | **wipes the builder node** | **yes** | ~16 min |
 | `flash` | **wipes every target node** not already on the golden build | **yes** | ~6 min per node, parallel |
@@ -109,7 +109,7 @@ granted on the node. With `ssh.sudo: password` the password comes from
 without the variable, the command fails with a message that names the
 variable. It is never read from the config file.
 
-## 4. The recommended procedures
+## 4. Procedures
 
 **First contact with an existing cluster** (nodes already run an OS you can SSH into):
 
@@ -131,9 +131,11 @@ rasputin sync -yes
 
 **Check on the cluster** (read-only): `rasputin status -json`.
 
-**Recover one broken node** that still boots: `rasputin flash <node>`.
-If it does not boot, `rasputin serve` and the recovery-agent section of the
-README.
+**Recover one broken node**: `rasputin flash <node>` if it still boots and
+answers SSH. If it does not, start `rasputin serve` and follow the
+escape-hatch and troubleshooting sections of the README: the node's
+recovery agent retries the download forever and never opens the card until
+the image is reachable.
 
 **Changed the recovery agent's Go code** (`internal/agent`, `internal/initramfs`):
 `sync` cannot see that, so run `rasputin sync -force-prepare`.
@@ -177,8 +179,8 @@ ran; a down node is reported in the data, not as a failure.
 
 - **Result fields**: `nodes`, a list of
   - `name`, `mac`: as configured.
-  - `reachable` (bool); when false, `error` says why and the other fields
-    are absent.
+  - `reachable` (bool); when false, `error` says why, `ip` is the
+    last-seen address if one is known, and the other fields are absent.
   - `ip`, `ssh_user`, `hostname`, `uptime`.
   - `build_id`: the golden build the node runs; absent when it runs a stock
     OS.
@@ -205,6 +207,7 @@ runs only the stale steps in order (`probe`, `prepare`, `adopt`, `bake`,
 | `-force-flash` | flash every node even when already on the golden build |
 | `-rehearse` | insert a `dryrun` of every node before the flash |
 | `-plain` | one line per event instead of the live display |
+| `-json` | plan, events and result as JSON objects (implies `-plain`, never prompts) |
 | `-log <path>` | run log (default `out/sync.log`; `-` disables) |
 
 A step is skipped when its output is current: `prepare` when the fingerprint
@@ -214,9 +217,10 @@ of `rasputin.yaml` plus the rendered provision files matches
 when its `build_id` equals the golden's.
 
 In text mode the plan ends with a `WILL WIPE:` line naming every node that
-loses its card, and an `estimated total`. Without `-yes`, a plan that wipes
-a node asks `Proceed? [y/N]` on a terminal, and fails with a message naming `-yes` without one or with
-`-json`. Declining exits 1 with `cancelled; nothing was touched`. Ctrl-c
+loses its card, and an `estimated total`. A plan that wipes a node then
+asks `Proceed? [y/N]`, unless `-yes` was given. Without a terminal, or with
+`-json`, there is no prompt: the command fails with a message naming
+`-yes`. Declining exits 1 with `cancelled; nothing was touched`. Ctrl-c
 exits 1 with `aborted; ...` and the nodes are safe.
 
 **JSON stream**, in order:
@@ -229,8 +233,9 @@ exits 1 with `aborted; ...` and the nodes are safe.
      in execution order. `skip` true means it will not run and `reason` says
      why.
    - `status`: the probe, same shape as `status`'s `nodes`.
-2. With `-plan`, then the result `{"type":"result","command":"sync","ok":true,"plan_only":true}`.
-3. Otherwise `{"type":"event", ...}` lines while it runs:
+2. With `-plan`, the result follows at once:
+   `{"type":"result","command":"sync","ok":true,"plan_only":true}`.
+3. Otherwise, `{"type":"event", ...}` lines while it runs:
    - `kind`: `started`, `done`, `skipped`, `failed` (one step's lifecycle),
      `log` (a free-form line), `phase` (a sub-stage of a long step),
      `transfer` (byte progress, about once a second per node).
@@ -348,15 +353,26 @@ download.
 
 ## 7. Errors you will see, and what they mean
 
-| message | meaning / action |
-|---|---|
-| `node … still carries the placeholder mac …` | `rasputin.yaml` still has `init`'s placeholders; fill in the real MACs |
-| `N of M node(s) do not answer … nothing has been touched` | `sync` refuses to plan with a node down; fix or remove it |
-| `this plan wipes at least one node and … re-run with -yes` | non-interactive confirmation; get approval, then `-yes` |
-| `cancelled; nothing was touched` | the operator answered no |
-| `aborted; the nodes are still in the recovery agent` | ctrl-c; safe to re-run `sync` |
-| `… is missing: run \`rasputin bake\` first` / `… run \`rasputin prepare\` first` | artifact order: prepare, then bake, then flash |
-| `sudo needs a password and none was supplied` | grant NOPASSWD on the node or set `ssh.sudo: password` |
-| `ssh.sudo is "password" but there is no terminal to prompt on` | set `RASPUTIN_SUDO_PASSWORD` |
-| `… answers as MAC …, but … is … — refusing to touch it` | the machine answering to that name is not the configured node; stop and investigate before doing anything else |
-| `REMOTE HOST IDENTIFICATION HAS CHANGED` (from plain `ssh`) | a node was reflashed; `ssh-keygen -R <host>` |
+- `node … still carries the placeholder mac …`
+  `rasputin.yaml` still has `init`'s placeholders; fill in the real MACs.
+- `N of M node(s) do not answer … nothing has been touched`
+  `sync` refuses to plan with a node down; fix the node or remove it from
+  the config.
+- `this plan wipes at least one node and … re-run with -yes`
+  No prompt is possible (no terminal, or `-json`). Get the owner's approval
+  of the plan, then re-run with `-yes`.
+- `cancelled; nothing was touched`
+  The operator answered no.
+- `aborted; the nodes are still in the recovery agent, nothing is half-written`
+  Ctrl-c. Safe to re-run `sync`; it resumes where it stopped.
+- `… is missing: run rasputin bake first`, `… run rasputin prepare first`
+  Artifact order: `prepare`, then `bake`, then `flash`.
+- `sudo needs a password and none was supplied`
+  Grant NOPASSWD on the node, or set `ssh.sudo: password`.
+- `ssh.sudo is "password" but there is no terminal to prompt on`
+  Set `RASPUTIN_SUDO_PASSWORD`.
+- `… answers as MAC …, but … is … — refusing to touch it`
+  The machine answering to that name is not the configured node. Stop and
+  investigate before doing anything else; nothing was written.
+- `REMOTE HOST IDENTIFICATION HAS CHANGED` (from plain `ssh`, not rasputin)
+  A node was reflashed and regenerated its host keys; `ssh-keygen -R <host>`.
