@@ -1,9 +1,7 @@
 package main
 
 import (
-	"flag"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"strings"
@@ -35,24 +33,23 @@ func (l *nodeList) Set(v string) error {
 	return nil
 }
 
-// runInit writes a starter rasputin.yaml. It is the one command that runs
-// without a config, so cfg carries only the -c path.
-func runInit(cfg *config.Config, args []string) error {
-	return initConfig(os.Stdout, cfg.Path, args)
+// runInit writes a starter rasputin.yaml. It is one of the two commands that
+// run without a config, so cfg carries only the -c path.
+func runInit(cfg *config.Config, out *output, args []string) error {
+	return initConfig(out, cfg.Path, args)
 }
 
-func initConfig(out io.Writer, path string, args []string) error {
-	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	fs.SetOutput(out)
+func initConfig(out *output, path string, args []string) error {
+	fs := out.flagSet("init")
 	force := fs.Bool("force", false, "overwrite an existing config")
 	builder := fs.String("builder", "", "node that bakes the golden image (default: the first node)")
 	var nodes nodeList
 	fs.Var(&nodes, "node", "a node as name=mac; repeat for each Pi (default: four placeholders)")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "usage: rasputin [-c rasputin.yaml] init [flags]\n\n"+
-			"Writes a commented starter config to the -c path. Without -node it\n"+
-			"writes four placeholder nodes; every command that touches a node\n"+
-			"refuses to run until the placeholder MACs are replaced with the\n"+
+		out.printfErr("usage: rasputin [-c rasputin.yaml] init [flags]\n\n" +
+			"Writes a commented starter config to the -c path. Without -node it\n" +
+			"writes four placeholder nodes; every command that touches a node\n" +
+			"refuses to run until the placeholder MACs are replaced with the\n" +
 			"real ones from `cat /sys/class/net/eth0/address`.\n\nflags:\n")
 		fs.PrintDefaults()
 	}
@@ -115,17 +112,27 @@ func initConfig(out io.Writer, path string, args []string) error {
 	if who == "" {
 		who = cfgNodes[0].Name
 	}
-	fmt.Fprintf(out, "wrote %s: %d node(s) %s, builder %s\n",
-		path, len(cfgNodes), strings.Join(names, " "), who)
-	fmt.Fprintf(out, "\nnext:\n")
+	var next []string
 	if placeholder {
-		fmt.Fprintf(out, "  $EDITOR %s   # replace the placeholder MACs "+
-			"(cat /sys/class/net/eth0/address on each Pi)\n", path)
+		next = append(next, fmt.Sprintf("$EDITOR %s   # replace the placeholder MACs "+
+			"(cat /sys/class/net/eth0/address on each Pi)", path))
 	} else {
-		fmt.Fprintf(out, "  $EDITOR %s   # check the user, packages and rootfs cap\n", path)
+		next = append(next, fmt.Sprintf("$EDITOR %s   # check the user, packages and rootfs cap", path))
 	}
-	fmt.Fprintf(out, "  rasputin sync          # prepare, bake and flash the whole cluster\n")
-	return nil
+	next = append(next, "rasputin sync          # prepare, bake and flash the whole cluster")
+
+	out.printf("wrote %s: %d node(s) %s, builder %s\n", path, len(cfgNodes), strings.Join(names, " "), who)
+	out.printf("\nnext:\n")
+	for _, n := range next {
+		out.printf("  %s\n", n)
+	}
+	return out.result("init", struct {
+		Path        string     `json:"path"`
+		Nodes       []nodeJSON `json:"nodes"`
+		Builder     string     `json:"builder"`
+		Placeholder bool       `json:"placeholder"`
+		Next        []string   `json:"next"`
+	}{path, toNodesJSON(cfgNodes), who, placeholder, next}, nil)
 }
 
 // hasNode reports whether name is one of the nodes the config will carry.

@@ -14,7 +14,19 @@ go test ./...     # must pass on darwin — no hardware needed
 go run ./cmd/rasputin init  # writes rasputin.yaml; needs -force to overwrite
 go run ./cmd/rasputin sync    # probe, plan, confirm, then only the stale steps
 go run ./cmd/rasputin sync -plain -yes   # no TUI, no prompt: CI and repro runs
+go run ./cmd/rasputin sync -plan -json   # read-only: what sync would do, as data
+go run ./cmd/rasputin manual             # the embedded manual (cmd/rasputin/MANUAL.md)
 ```
+
+Every command takes `-json`: stdout becomes newline-delimited JSON objects,
+last one `{"type":"result","command":…,"ok":…}`. The contract is in
+`cmd/rasputin/output.go` (envelope) and `cmd/rasputin/json.go` (views), and
+is documented field by field in `cmd/rasputin/MANUAL.md`. **A new command,
+flag or result field is not done until the manual says so** — the manual is
+what an agent driving the tool reads, and `TestManual` checks every command
+has a section. In JSON mode nothing but JSON may reach stdout: commands print
+through `output.printf` (dropped in JSON mode) and `output.logf` (becomes a
+log object), never `fmt.Print`.
 
 `sync` is idempotent and is now the normal way to drive the cluster; the single
 commands stay as the escape hatch. It refuses to start when any node is

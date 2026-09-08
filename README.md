@@ -182,6 +182,30 @@ go run ./cmd/rasputin flash all
 Nodes are named by their config `name`, or `all` for every configured node.
 Flags always come before the positional arguments.
 
+The full reference is the manual, `rasputin manual`, whose source is
+[`cmd/rasputin/MANUAL.md`](cmd/rasputin/MANUAL.md): what every command
+touches, how long it takes, its flags, and its JSON. It is written for a
+program as much as for a person.
+
+### `-json` — machine-readable output, on every command
+
+Every command accepts `-json` (before or after the command name). Stdout then
+carries newline-delimited JSON objects and nothing else: optional
+`{"type":"log",...}` progress lines, `sync`'s `plan` and `event` objects, and
+always, last, `{"type":"result","command":"...","ok":true|false,...}` with the
+command's data, plus `"error"` on failure. The exit status is 1 on failure
+either way, even when the failure is a config that does not load. `-json`
+never prompts: a `sync` that would wipe a node needs `-yes`, and `-plan`
+shows the plan without running it.
+
+```sh
+rasputin status -json | jq -c 'select(.type=="result") | .nodes[] | {name, reachable, build_id}'
+rasputin sync -plan -json | jq 'select(.type=="plan") | {needs_confirmation, wipes}'
+rasputin sync -json -yes | tee run.jsonl | jq -c 'select(.type=="result") | {ok, error}'
+```
+
+The field-by-field schema of each result is in the manual.
+
 ### `init` — write a starting `rasputin.yaml`
 
 ```sh
@@ -250,7 +274,9 @@ so rather than guessing.
 | `-force-flash` | flash every target even when it already runs the golden build |
 | `-rehearse` | run a `dryrun` on every node before the flash |
 | `-yes` | answer the confirmation prompt |
+| `-plan` | probe, print the plan, and exit without touching anything |
 | `-plain` | line-by-line output instead of the TUI |
+| `-json` | plan, events and result as JSON objects, one per line (implies `-plain`, never prompts) |
 | `-log <path>` | where the run log goes (default `out/sync.log`; `-` disables it) |
 
 On a terminal `sync` draws a live view: per-step state, a per-node bar during
@@ -334,13 +360,21 @@ keeps working despite the regenerated host keys.
 ### `status` — read-only health table
 
 Node, address, SSH user, hostname, build id, provisioned marker, uptime,
-for every configured node. ~2 s. Touches nothing.
+for every configured node. ~2 s. Touches nothing. With `-json` each node is
+an object with `reachable`, `adopted`, `provisioned`, `build_id` and, for a
+node that does not answer, `error`.
 
 ### `serve` — the HTTP server alone
 
 Runs the image/capture server without triggering anything, for
 hand-triggered flashes (see the escape hatch below). Prints the exact
 flag-file line to paste.
+
+### `manual` — the manual, from the binary
+
+Prints `cmd/rasputin/MANUAL.md`, which is compiled in, so whoever holds
+the executable has the whole reference. `manual -json` returns the text
+and the command list as data.
 
 ## Day 0: a virgin SD card
 
@@ -466,7 +500,7 @@ you do not own.
 ## Layout
 
 ```
-cmd/rasputin      the CLI
+cmd/rasputin      the CLI; MANUAL.md is the embedded manual, json.go the JSON views
 cmd/agent         the recovery agent — becomes /init inside recovery.gz
 internal/agent    boot, flag selection, switch_root, reflash/dryrun/capture
 internal/bootfs   FAT32 boot-partition editing and config.txt/cmdline.txt patches

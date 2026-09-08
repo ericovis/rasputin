@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 
 	"github.com/ericovis/rasputin/internal/cluster"
@@ -14,12 +13,12 @@ import (
 // Sequential on purpose: adoption reboots each node, and doing several at
 // once would mean several nodes down simultaneously with no way to tell
 // which one is in trouble.
-func runAdopt(cfg *config.Config, args []string) error {
-	fs := flag.NewFlagSet("adopt", flag.ContinueOnError)
+func runAdopt(cfg *config.Config, out *output, args []string) error {
+	fs := out.flagSet("adopt")
 	rebootCheck := fs.Bool("reboot-check", true, "reboot each node afterwards and verify it boots through the recovery agent")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "usage: rasputin adopt [flags] <node|all>\n\n"+
-			"Installs recovery.gz and the config.txt hook on a live node over SSH.\n"+
+		out.printfErr("usage: rasputin adopt [flags] <node|all>\n\n" +
+			"Installs recovery.gz and the config.txt hook on a live node over SSH.\n" +
 			"Does not flash anything.\n\nflags:\n")
 		fs.PrintDefaults()
 	}
@@ -27,31 +26,40 @@ func runAdopt(cfg *config.Config, args []string) error {
 		return err
 	}
 
-	c, targets, err := setup(cfg, fs.Args())
+	c, targets, err := setup(cfg, out, fs.Args())
 	if err != nil {
 		return err
 	}
 
+	report := struct {
+		RebootCheck bool            `json:"reboot_check"`
+		Nodes       []adoptNodeJSON `json:"nodes"`
+		Adopted     int             `json:"adopted"`
+		Failed      int             `json:"failed"`
+	}{RebootCheck: *rebootCheck, Nodes: []adoptNodeJSON{}}
+
 	ctx := context.Background()
-	var failed int
 	for _, node := range targets {
-		fmt.Printf("\n=== %s ===\n", node.Name)
+		out.printf("\n=== %s ===\n", node.Name)
 		res := c.Adopt(ctx, node, cluster.AdoptOptions{RebootCheck: *rebootCheck})
+		report.Nodes = append(report.Nodes, toAdoptJSON(res))
 		if len(res.Preflight.Checks) > 0 {
-			fmt.Print(res.Preflight)
+			out.printf("%s", res.Preflight)
 		}
 		if res.OK() {
-			fmt.Printf("%s: PASS%s\n", node.Name, rebootedNote(res.Rebooted))
+			report.Adopted++
+			out.printf("%s: PASS%s\n", node.Name, rebootedNote(res.Rebooted))
 			continue
 		}
-		failed++
-		fmt.Printf("%s: FAIL — %v\n", node.Name, res.Err)
+		report.Failed++
+		out.printf("%s: FAIL — %v\n", node.Name, res.Err)
 	}
-	if failed > 0 {
-		return fmt.Errorf("%d of %d node(s) could not be adopted", failed, len(targets))
+	if report.Failed > 0 {
+		return out.result("adopt", report,
+			fmt.Errorf("%d of %d node(s) could not be adopted", report.Failed, len(targets)))
 	}
-	fmt.Printf("\nadopted %d node(s)\n", len(targets))
-	return nil
+	out.printf("\nadopted %d node(s)\n", len(targets))
+	return out.result("adopt", report, nil)
 }
 
 func rebootedNote(rebooted bool) string {
@@ -63,8 +71,8 @@ func rebootedNote(rebooted bool) string {
 
 // setup builds the cluster and resolves the node arguments, the two things
 // every node-touching command starts with.
-func setup(cfg *config.Config, args []string) (*cluster.Cluster, []config.Node, error) {
-	c, err := newCluster(cfg)
+func setup(cfg *config.Config, out *output, args []string) (*cluster.Cluster, []config.Node, error) {
+	c, err := newCluster(cfg, out)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -76,11 +84,12 @@ func setup(cfg *config.Config, args []string) (*cluster.Cluster, []config.Node, 
 }
 
 // newCluster builds a Cluster, obtaining a sudo password first if the config
-// asks for one.
-func newCluster(cfg *config.Config) (*cluster.Cluster, error) {
+// asks for one. Its progress lines go through out, so in JSON mode they are
+// {"type":"log"} objects rather than text on the JSON stream.
+func newCluster(cfg *config.Config, out *output) (*cluster.Cluster, error) {
 	pw, err := sudoPassword(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return cluster.NewWithSudo(cfg, pw, func(format string, a ...any) { fmt.Printf(format+"\n", a...) })
+	return cluster.NewWithSudo(cfg, pw, out.logf)
 }

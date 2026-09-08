@@ -86,6 +86,35 @@ type Event struct {
 	Time    time.Time
 }
 
+// Wire is the JSON form of an Event, for machine consumers such as
+// `rasputin sync -json`. Kind is the lower-case name from Kind.String; the
+// transfer numbers are present only when non-zero.
+type Wire struct {
+	Kind    string    `json:"kind"`
+	Step    string    `json:"step,omitempty"`
+	Node    string    `json:"node,omitempty"`
+	Message string    `json:"message,omitempty"`
+	Bytes   int64     `json:"bytes,omitempty"`
+	Total   int64     `json:"total,omitempty"`
+	Rate    float64   `json:"rate_bytes_per_second,omitempty"`
+	Time    time.Time `json:"time"`
+}
+
+// ToWire converts an Event to its JSON form, stamping the time if unset.
+func ToWire(e Event) Wire {
+	e = Stamp(e)
+	return Wire{
+		Kind:    e.Kind.String(),
+		Step:    string(e.Step),
+		Node:    e.Node,
+		Message: e.Message,
+		Bytes:   e.Bytes,
+		Total:   e.Total,
+		Rate:    e.Rate,
+		Time:    e.Time,
+	}
+}
+
 // Sink receives events. Implementations must be safe for concurrent use:
 // steps run goroutines per node.
 type Sink interface {

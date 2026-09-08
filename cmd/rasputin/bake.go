@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"time"
 
@@ -12,13 +11,14 @@ import (
 
 // runBake produces the golden image using the builder node as an arm64
 // build machine.
-func runBake(cfg *config.Config, args []string) error {
-	fs := flag.NewFlagSet("bake", flag.ContinueOnError)
+func runBake(cfg *config.Config, out *output, args []string) error {
+	fs := out.flagSet("bake")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "usage: rasputin bake\n\n"+
+		out.printfErr("usage: rasputin bake [flags]\n\n"+
 			"Reflashes the builder node (%s) with the prepared stock image, waits\n"+
 			"for it to provision itself, seals it, and captures its card as\n"+
-			"out/golden.img.zst. This wipes the builder.\n", cfg.Builder)
+			"out/golden.img.zst. This wipes the builder.\n\nflags:\n", cfg.Builder)
+		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -27,7 +27,7 @@ func runBake(cfg *config.Config, args []string) error {
 		return fmt.Errorf("bake takes no arguments; the builder is %s from the config", cfg.Builder)
 	}
 
-	c, err := newCluster(cfg)
+	c, err := newCluster(cfg, out)
 	if err != nil {
 		return err
 	}
@@ -41,11 +41,16 @@ func runBake(cfg *config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\ngolden image baked in %s\n", res.Duration.Round(time.Second))
-	fmt.Printf("  build:  %s\n", res.Meta.BuildID)
-	fmt.Printf("  base:   %s\n", res.Meta.Base)
-	fmt.Printf("  size:   %d bytes compressed, %d bytes of card\n", res.Meta.Bytes, res.Meta.CardUsed)
-	fmt.Printf("  sha256: %s\n", res.Meta.SHA256)
-	fmt.Printf("  meta:   %s\n", cluster.GoldenMetaPath)
-	return nil
+	out.printf("\ngolden image baked in %s\n", res.Duration.Round(time.Second))
+	out.printf("  build:  %s\n", res.Meta.BuildID)
+	out.printf("  base:   %s\n", res.Meta.Base)
+	out.printf("  size:   %d bytes compressed, %d bytes of card\n", res.Meta.Bytes, res.Meta.CardUsed)
+	out.printf("  sha256: %s\n", res.Meta.SHA256)
+	out.printf("  meta:   %s\n", cluster.GoldenMetaPath)
+	return out.result("bake", struct {
+		DurationSeconds float64             `json:"duration_seconds"`
+		Golden          *cluster.GoldenMeta `json:"golden"`
+		GoldenPath      string              `json:"golden_path"`
+		MetaPath        string              `json:"meta_path"`
+	}{seconds(res.Duration), res.Meta, cluster.GoldenImage.Path, cluster.GoldenMetaPath}, nil)
 }

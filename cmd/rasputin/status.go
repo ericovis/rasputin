@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
-	"fmt"
 
 	"github.com/ericovis/rasputin/internal/cluster"
 	"github.com/ericovis/rasputin/internal/config"
@@ -11,11 +9,12 @@ import (
 
 // runStatus prints a read-only view of the cluster. It never changes
 // anything, so it is safe to run at any point during a flash.
-func runStatus(cfg *config.Config, args []string) error {
-	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+func runStatus(cfg *config.Config, out *output, args []string) error {
+	fs := out.flagSet("status")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "usage: rasputin status [node...]\n\n"+
-			"Probes every node in parallel and prints a table. Read-only.\n")
+		out.printfErr("usage: rasputin status [flags] [node...]\n\n" +
+			"Probes every node in parallel and prints a table. Read-only.\n\nflags:\n")
+		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -39,6 +38,9 @@ func runStatus(cfg *config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Print(cluster.StatusTable(c.Status(context.Background(), selected)))
-	return nil
+	rows := c.Status(context.Background(), selected)
+	out.printf("%s", cluster.StatusTable(rows))
+	return out.result("status", struct {
+		Nodes []statusJSON `json:"nodes"`
+	}{toStatusJSON(rows)}, nil)
 }

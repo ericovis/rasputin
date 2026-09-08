@@ -13,7 +13,7 @@ import (
 func TestInitWritesATemplate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rasputin.yaml")
 	var out bytes.Buffer
-	if err := initConfig(&out, path, nil); err != nil {
+	if err := initConfig(testOutput(&out), path, nil); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -93,7 +93,7 @@ func TestInitNodeFlags(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "rasputin.yaml")
 			var out bytes.Buffer
-			err := initConfig(&out, path, tc.args)
+			err := initConfig(testOutput(&out), path, tc.args)
 			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("want error containing %q, got nil", tc.wantErr)
@@ -136,7 +136,7 @@ func TestInitNodeFlags(t *testing.T) {
 func TestInitAcceptsAPlaceholderBuilder(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rasputin.yaml")
 	var out bytes.Buffer
-	if err := initConfig(&out, path, []string{"-builder", "rasputin003"}); err != nil {
+	if err := initConfig(testOutput(&out), path, []string{"-builder", "rasputin003"}); err != nil {
 		t.Fatalf("init -builder rasputin003: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -154,7 +154,7 @@ func TestInitRefusesToOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	err := initConfig(&out, path, nil)
+	err := initConfig(testOutput(&out), path, nil)
 	if err == nil {
 		t.Fatal("init overwrote an existing config without -force")
 	}
@@ -165,7 +165,7 @@ func TestInitRefusesToOverwrite(t *testing.T) {
 		t.Errorf("the existing file changed: %q", data)
 	}
 
-	if err := initConfig(&out, path, []string{"-force"}); err != nil {
+	if err := initConfig(testOutput(&out), path, []string{"-force"}); err != nil {
 		t.Fatalf("init -force: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -177,11 +177,12 @@ func TestInitRefusesToOverwrite(t *testing.T) {
 	}
 }
 
-// TestInitIsTheOnlyCommandWithoutAConfig guards the dispatch change: every
-// other command must still get a loaded, validated config.
-func TestInitIsTheOnlyCommandWithoutAConfig(t *testing.T) {
+// TestOnlyInitAndManualRunWithoutAConfig guards the dispatch: every other
+// command must still get a loaded, validated config.
+func TestOnlyInitAndManualRunWithoutAConfig(t *testing.T) {
 	for _, c := range commands {
-		if (c.name == "init") == c.needsConfig {
+		exempt := c.name == "init" || c.name == "manual"
+		if exempt == c.needsConfig {
 			t.Errorf("command %q: needsConfig = %v", c.name, c.needsConfig)
 		}
 	}

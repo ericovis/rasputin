@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -13,18 +12,19 @@ import (
 
 // runServe runs the HTTP server on its own, for debugging a node that is
 // downloading (or refusing to download) an image.
-func runServe(cfg *config.Config, args []string) error {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+func runServe(cfg *config.Config, out *output, args []string) error {
+	fs := out.flagSet("serve")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "usage: rasputin serve\n\n"+
-			"Serves the prepared and golden images and accepts captures, until\n"+
-			"interrupted. Useful for triggering a reflash by hand.\n")
+		out.printfErr("usage: rasputin serve [flags]\n\n" +
+			"Serves the prepared and golden images and accepts captures, until\n" +
+			"interrupted. Useful for triggering a reflash by hand.\n\nflags:\n")
+		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	c, err := newCluster(cfg)
+	c, err := newCluster(cfg, out)
 	if err != nil {
 		return err
 	}
@@ -34,7 +34,7 @@ func runServe(cfg *config.Config, args []string) error {
 	}
 	defer srv.Close()
 
-	var served int
+	var images []imageJSON
 	for _, img := range []cluster.Image{cluster.GoldenImage, cluster.VanillaImage} {
 		if !img.Exists() {
 			continue
@@ -42,19 +42,33 @@ func runServe(cfg *config.Config, args []string) error {
 		if err := srv.Register(img.Name, img.Path); err != nil {
 			return err
 		}
-		fmt.Printf("serving %s at %s\n", img.Path, srv.URLFor(img.Name))
-		served++
+		out.printf("serving %s at %s\n", img.Path, srv.URLFor(img.Name))
+		images = append(images, imageJSON{Name: img.Name, Path: img.Path, URL: srv.URLFor(img.Name)})
 	}
-	if served == 0 {
+	if len(images) == 0 {
 		return fmt.Errorf("no images to serve: run `rasputin prepare` first")
 	}
-	fmt.Printf("\nto reflash a node by hand:\n"+
-		"  ssh <node> 'echo %s | sudo tee %s && sudo reboot'\n\n"+
-		"press ctrl-c to stop\n", srv.URLFor(cluster.GoldenImage.Name), cluster.FlagReflash)
+	goldenURL := srv.URLFor(cluster.GoldenImage.Name)
+	trigger := fmt.Sprintf("ssh <node> 'echo %s | sudo tee %s && sudo reboot'", goldenURL, cluster.FlagReflash)
+	out.printf("\nto reflash a node by hand:\n  %s\n\npress ctrl-c to stop\n", trigger)
+
+	// In JSON mode the caller needs the URLs now, not when the server
+	// stops, so the first line on the stream says what is being served.
+	serving := struct {
+		Type        string      `json:"type"`
+		Images      []imageJSON `json:"images"`
+		ReflashFlag string      `json:"reflash_flag"`
+		Trigger     string      `json:"trigger"`
+	}{"serving", images, cluster.FlagReflash, trigger}
+	if out.json {
+		out.emit(serving)
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
-	fmt.Println("\nstopping")
-	return nil
+	out.printf("\nstopping\n")
+	return out.result("serve", struct {
+		Images []imageJSON `json:"images"`
+	}{images}, nil)
 }

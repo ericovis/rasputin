@@ -4,9 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -19,6 +17,7 @@ import (
 	"github.com/ericovis/rasputin/internal/cluster"
 	"github.com/ericovis/rasputin/internal/config"
 	"github.com/ericovis/rasputin/internal/events"
+	"github.com/ericovis/rasputin/internal/server"
 	"github.com/ericovis/rasputin/internal/tui"
 	"github.com/ericovis/rasputin/internal/up"
 )
@@ -26,8 +25,8 @@ import (
 // runSync is the one command the whole CLI exists to make unnecessary to
 // spell out: prepare, adopt, bake, flash and status, each skipped when its
 // output is already what rasputin.yaml describes.
-func runSync(cfg *config.Config, args []string) error {
-	opts, plain, err := parseSyncFlags(cfg, args)
+func runSync(cfg *config.Config, out *output, args []string) error {
+	opts, flags, err := parseSyncFlags(cfg, out, args)
 	if err != nil {
 		return err
 	}
@@ -47,11 +46,15 @@ func runSync(cfg *config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	srv, err := c.Serve()
-	if err != nil {
-		return err
+	// Planning is read-only and needs no HTTP server; -plan must work while
+	// another rasputin holds the port (a sync in progress, say).
+	var srv *server.Server
+	if !flags.PlanOnly {
+		if srv, err = c.Serve(); err != nil {
+			return err
+		}
+		defer srv.Close()
 	}
-	defer srv.Close()
 
 	deps := up.NewDeps(c, srv)
 	setLog := deps.SetLog
@@ -69,13 +72,21 @@ func runSync(cfg *config.Config, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	return executeSync(ctx, deps, opts, syncUI{Out: os.Stdout, In: os.Stdin, Plain: plain})
+	return executeSync(ctx, deps, opts, syncUI{Out: out, In: os.Stdin, Plain: flags.Plain, PlanOnly: flags.PlanOnly})
+}
+
+// syncFlags are the switches that shape the command rather than the run.
+type syncFlags struct {
+	// Plain prints one line per event instead of drawing.
+	Plain bool
+	// PlanOnly stops after printing the plan; nothing is touched.
+	PlanOnly bool
 }
 
 // parseSyncFlags turns the command line into up.Options. It is separate from
 // runSync so the flag contract can be tested without a cluster.
-func parseSyncFlags(cfg *config.Config, args []string) (up.Options, bool, error) {
-	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
+func parseSyncFlags(cfg *config.Config, out *output, args []string) (up.Options, syncFlags, error) {
+	fs := out.flagSet("sync")
 	force := fs.Bool("force", false, "shorthand for -force-prepare -force-bake -force-flash")
 	forcePrepare := fs.Bool("force-prepare", false, "rebuild the recovery agent and the stock image even if they match the config")
 	forceBake := fs.Bool("force-bake", false, "bake a new golden image even if the current one matches the prepared image")
@@ -83,23 +94,25 @@ func parseSyncFlags(cfg *config.Config, args []string) (up.Options, bool, error)
 	rehearse := fs.Bool("rehearse", false, "dryrun every node before flashing, to prove the pipeline without writing a card")
 	yes := fs.Bool("yes", false, "do not ask before wiping a node")
 	plain := fs.Bool("plain", false, "print one line per event instead of drawing the progress display")
+	planOnly := fs.Bool("plan", false, "probe, print the plan, and stop without touching anything")
 	logPath := fs.String("log", up.DefaultLogPath, `append every event to this file ("-" for none)`)
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "usage: rasputin sync [flags]\n\n"+
+		out.printfErr("usage: rasputin sync [flags]\n\n"+
 			"Brings the whole cluster to the state %s describes: prepares the\n"+
 			"image, adopts what is not adopted, bakes the golden image when it is\n"+
 			"stale and clones it to every node that is not already running it.\n"+
 			"Each step is skipped when its output is already current.\n\n"+
 			"The plan is printed first, and a plan that wipes a card asks before\n"+
-			"it starts. Aborting with q or ctrl-c is safe: a node left mid-run\n"+
-			"stays in the recovery agent, which keeps retrying.\n\nflags:\n", cfg.Path)
+			"it starts (-plan stops there; -yes answers it). Aborting with q or\n"+
+			"ctrl-c is safe: a node left mid-run stays in the recovery agent,\n"+
+			"which keeps retrying.\n\nflags:\n", cfg.Path)
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
-		return up.Options{}, false, err
+		return up.Options{}, syncFlags{}, err
 	}
 	if fs.NArg() > 0 {
-		return up.Options{}, false, fmt.Errorf(
+		return up.Options{}, syncFlags{}, fmt.Errorf(
 			"sync takes no arguments; it acts on every node in %s (flags come first)", cfg.Path)
 	}
 	return up.Options{
@@ -109,16 +122,19 @@ func parseSyncFlags(cfg *config.Config, args []string) (up.Options, bool, error)
 		Rehearse:     *rehearse,
 		Yes:          *yes,
 		LogPath:      *logPath,
-	}, *plain, nil
+	}, syncFlags{Plain: *plain, PlanOnly: *planOnly}, nil
 }
 
 // syncUI is where `sync` talks to the operator: the summary, the confirmation
-// and the choice between the drawn display and plain lines.
+// and the choice between the drawn display, plain lines and JSON.
 type syncUI struct {
-	Out io.Writer
+	Out *output
 	In  *os.File
-	// Plain forces line output. A run without a terminal is always plain.
+	// Plain forces line output. A run without a terminal is always plain,
+	// and so is JSON mode.
 	Plain bool
+	// PlanOnly stops after the plan.
+	PlanOnly bool
 	// Confirm replaces the terminal prompt in tests.
 	Confirm func() (bool, error)
 }
@@ -127,11 +143,22 @@ type syncUI struct {
 // report. It takes up.Deps rather than a Cluster so the whole flow, this
 // command's real logic, is testable without a Pi.
 func executeSync(ctx context.Context, deps up.Deps, opts up.Options, ui syncUI) error {
+	out := ui.Out
 	plan, err := up.NewPlan(ctx, deps, opts)
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(ui.Out, plan.Summary())
+	if out.json {
+		out.emit(toPlanJSON(plan))
+	}
+	out.printf("%s", plan.Summary())
+
+	if ui.PlanOnly {
+		out.printf("\n-plan given: nothing was touched\n")
+		return out.result("sync", struct {
+			PlanOnly bool `json:"plan_only"`
+		}{true}, nil)
+	}
 
 	if plan.NeedsConfirmation() && !opts.Yes {
 		ok, err := ui.confirm()
@@ -142,7 +169,7 @@ func executeSync(ctx context.Context, deps up.Deps, opts up.Options, ui syncUI) 
 			return errors.New("cancelled; nothing was touched")
 		}
 	}
-	fmt.Fprintln(ui.Out)
+	out.printf("\n")
 
 	// The run happens in the TUI's goroutine, and an abort can return from
 	// tui.Run before it has unwound, so the result is handed over under a
@@ -158,9 +185,12 @@ func executeSync(ctx context.Context, deps up.Deps, opts up.Options, ui syncUI) 
 	}
 
 	var runErr error
-	if ui.plainOutput() {
-		runErr = do(ctx, events.NewPlain(ui.Out))
-	} else {
+	switch {
+	case out.json:
+		runErr = do(ctx, events.Func(func(e events.Event) { out.emit(toJSONEvent(e)) }))
+	case ui.plainOutput():
+		runErr = do(ctx, events.NewPlain(out.w))
+	default:
 		runErr = tui.Run(ctx, "rasputin sync · cluster "+plan.Cluster, tuiSteps(plan.Steps), do)
 	}
 
@@ -168,36 +198,42 @@ func executeSync(ctx context.Context, deps up.Deps, opts up.Options, ui syncUI) 
 	res := result
 	mu.Unlock()
 	if res != nil {
-		fmt.Fprint(ui.Out, "\n"+resultTable(res))
+		out.printf("\n%s", resultTable(res))
 		// Only the status step fills Result.Status. A run that stopped before
 		// it must not end with the pre-run probe printed as if it were the
 		// state the cluster was left in.
 		if len(res.Status) > 0 {
-			fmt.Fprint(ui.Out, "\n"+cluster.StatusTable(res.Status))
+			out.printf("\n%s", cluster.StatusTable(res.Status))
 		}
 	}
-	if errors.Is(runErr, context.Canceled) {
+	aborted := errors.Is(runErr, context.Canceled)
+	if aborted {
 		// Aborting is not a failed step: the recovery agent keeps retrying,
 		// and the next `sync` picks up exactly where this one stopped.
-		return errors.New("aborted; the nodes are still in the recovery agent, nothing is half-written")
+		runErr = errors.New("aborted; the nodes are still in the recovery agent, nothing is half-written")
 	}
-	return runErr
+	return out.result("sync", toSyncResultJSON(res, aborted, opts.LogPath), runErr)
 }
 
 // plainOutput reports whether to print lines instead of drawing. No
 // terminal means plain whatever the flag says.
-func (u syncUI) plainOutput() bool { return u.Plain || !tui.IsTerminal() }
+func (u syncUI) plainOutput() bool { return u.Plain || u.Out.json || !tui.IsTerminal() }
 
-// confirm asks before the first card is wiped.
+// confirm asks before the first card is wiped. JSON mode never asks: a
+// program cannot answer a prompt, and must say -yes to mean it.
 func (u syncUI) confirm() (bool, error) {
 	if u.Confirm != nil {
 		return u.Confirm()
+	}
+	if u.Out.json {
+		return false, errors.New(
+			"this plan wipes at least one node and -json never prompts: re-run with -yes, or -plan to only look")
 	}
 	if u.In == nil || !term.IsTerminal(int(u.In.Fd())) {
 		return false, errors.New(
 			"this plan wipes at least one node and there is no terminal to confirm on: re-run with -yes")
 	}
-	fmt.Fprint(u.Out, "\nProceed? [y/N] ")
+	u.Out.printf("\nProceed? [y/N] ")
 	line, err := bufio.NewReader(u.In).ReadString('\n')
 	if err != nil && line == "" {
 		return false, fmt.Errorf("reading the answer: %w", err)

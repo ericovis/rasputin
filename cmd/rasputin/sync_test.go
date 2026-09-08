@@ -157,7 +157,7 @@ func TestSyncFlags(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			opts, plain, err := parseSyncFlags(cfg, tc.args)
+			opts, flags, err := parseSyncFlags(cfg, testOutput(&bytes.Buffer{}), tc.args)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("parseSyncFlags(%v) error = %v, want it to mention %q", tc.args, err, tc.wantErr)
@@ -170,8 +170,8 @@ func TestSyncFlags(t *testing.T) {
 			if opts != tc.want {
 				t.Errorf("options = %+v, want %+v", opts, tc.want)
 			}
-			if plain != tc.wantPlain {
-				t.Errorf("plain = %v, want %v", plain, tc.wantPlain)
+			if flags.Plain != tc.wantPlain {
+				t.Errorf("plain = %v, want %v", flags.Plain, tc.wantPlain)
 			}
 		})
 	}
@@ -183,7 +183,7 @@ func TestSyncFlags(t *testing.T) {
 func TestSyncOnACurrentCluster(t *testing.T) {
 	f := newUpFake(t)
 	var out bytes.Buffer
-	ui := syncUI{Out: &out, Plain: true, Confirm: func() (bool, error) {
+	ui := syncUI{Out: testOutput(&out), Plain: true, Confirm: func() (bool, error) {
 		t.Error("a run that wipes nothing asked for confirmation")
 		return false, nil
 	}}
@@ -212,7 +212,7 @@ func TestSyncAsksBeforeWiping(t *testing.T) {
 
 	var out bytes.Buffer
 	asked := false
-	ui := syncUI{Out: &out, Plain: true, Confirm: func() (bool, error) { asked = true; return false, nil }}
+	ui := syncUI{Out: testOutput(&out), Plain: true, Confirm: func() (bool, error) { asked = true; return false, nil }}
 
 	err := executeSync(context.Background(), f.deps(), upOpts(), ui)
 	if err == nil || !strings.Contains(err.Error(), "cancelled") {
@@ -238,7 +238,7 @@ func TestSyncWithYesSkipsThePrompt(t *testing.T) {
 	opts.Yes = true
 
 	var out bytes.Buffer
-	ui := syncUI{Out: &out, Plain: true, Confirm: func() (bool, error) {
+	ui := syncUI{Out: testOutput(&out), Plain: true, Confirm: func() (bool, error) {
 		t.Error("-yes still prompted")
 		return false, nil
 	}}
@@ -261,7 +261,7 @@ func TestSyncWithoutATerminalDemandsYes(t *testing.T) {
 	f.golden = nil
 
 	var out bytes.Buffer
-	err := executeSync(context.Background(), f.deps(), upOpts(), syncUI{Out: &out, Plain: true})
+	err := executeSync(context.Background(), f.deps(), upOpts(), syncUI{Out: testOutput(&out), Plain: true})
 	if err == nil || !strings.Contains(err.Error(), "-yes") {
 		t.Fatalf("error = %v, want it to tell the operator to pass -yes", err)
 	}
@@ -277,7 +277,7 @@ func TestSyncReportsAFailedStep(t *testing.T) {
 	opts.Yes = true
 
 	var out bytes.Buffer
-	err := executeSync(context.Background(), f.deps(), opts, syncUI{Out: &out, Plain: true})
+	err := executeSync(context.Background(), f.deps(), opts, syncUI{Out: testOutput(&out), Plain: true})
 	if err == nil || !strings.Contains(err.Error(), "never came back") {
 		t.Fatalf("error = %v, want the bake failure", err)
 	}
@@ -301,7 +301,7 @@ func TestSyncAbortIsNotAFailure(t *testing.T) {
 	opts.Yes = true
 
 	var out bytes.Buffer
-	err := executeSync(context.Background(), f.deps(), opts, syncUI{Out: &out, Plain: true})
+	err := executeSync(context.Background(), f.deps(), opts, syncUI{Out: testOutput(&out), Plain: true})
 	if err == nil || !strings.Contains(err.Error(), "aborted") {
 		t.Fatalf("error = %v, want an abort, not a step failure", err)
 	}
@@ -323,7 +323,7 @@ func TestSyncAbortsPlanningOnAnUnreachableNode(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := executeSync(context.Background(), deps, upOpts(), syncUI{Out: &out, Plain: true})
+	err := executeSync(context.Background(), deps, upOpts(), syncUI{Out: testOutput(&out), Plain: true})
 	if err == nil || !strings.Contains(err.Error(), "rasputin003") {
 		t.Fatalf("error = %v, want it to name the node that does not answer", err)
 	}
@@ -364,7 +364,7 @@ func TestSyncDoesNotPromiseWipesItThenSkips(t *testing.T) {
 	opts.Yes = true
 
 	var out bytes.Buffer
-	if err := executeSync(context.Background(), f.deps(), opts, syncUI{Out: &out, Plain: true}); err != nil {
+	if err := executeSync(context.Background(), f.deps(), opts, syncUI{Out: testOutput(&out), Plain: true}); err != nil {
 		t.Fatalf("up: %v", err)
 	}
 	if len(f.flashed) != 0 {
@@ -392,7 +392,7 @@ func TestSyncDoesNotPrintThePreRunProbeAsTheFinalState(t *testing.T) {
 	opts.Yes = true
 
 	var out bytes.Buffer
-	if err := executeSync(context.Background(), f.deps(), opts, syncUI{Out: &out, Plain: true}); err == nil {
+	if err := executeSync(context.Background(), f.deps(), opts, syncUI{Out: testOutput(&out), Plain: true}); err == nil {
 		t.Fatal("a failed bake returned no error")
 	}
 	if strings.Contains(out.String(), "PROV") {
