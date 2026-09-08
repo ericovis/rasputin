@@ -10,7 +10,18 @@ obvious from the code, and that cost real time to learn.
 make build        # CLI + out/recovery.gz
 make test         # go test ./... and a linux/arm64 cross-build
 go test ./...     # must pass on darwin — no hardware needed
+
+go run ./cmd/rasputin init  # writes rasputin.yaml; needs -force to overwrite
+go run ./cmd/rasputin sync    # probe, plan, confirm, then only the stale steps
+go run ./cmd/rasputin sync -plain -yes   # no TUI, no prompt: CI and repro runs
 ```
+
+`sync` is idempotent and is now the normal way to drive the cluster; the single
+commands stay as the escape hatch. It refuses to start when any node is
+unreachable, and every event it emits is also appended to `out/sync.log`.
+`internal/events` is the contract between orchestration and UI — orchestration
+emits `events.Event`, never draws. `internal/tui` is the **only** package
+allowed to import bubbletea/lipgloss; nothing else may grow a TTY dependency.
 
 `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build ./...` must always pass.
 Linux-only syscalls live behind build tags with `!linux` stubs so the module
@@ -63,7 +74,20 @@ Each of these has a regression test. If you touch the area, run it.
   `rasputin.yaml` `image.rootfs_size_gb` is templated into `firstrun.sh` and
   `seal.sh` inside `out/vanilla-custom.img.zst`. Editing the yaml and baking
   without re-running `prepare` silently bakes at the *old* cap. Always: edit
-  yaml → `prepare` → `rm out/vanilla-custom.img` → `bake`.
+  yaml → `prepare` → `rm out/vanilla-custom.img` → `bake`. `sync` does that
+  sequence for you and is the reason it exists.
+- **`prepare`'s idempotency key does not cover Go code.**
+  `prepare.Fingerprint` hashes `image.source_url` and the *rendered provision
+  files* plus `nodes.conf`, so it moves when `rasputin.yaml` or an
+  `internal/provision` template moves, and stays put for a comment edit. A change to
+  `internal/agent` or `internal/initramfs` — i.e. to `recovery.gz` — is
+  **not** in it, so `sync` will happily skip prepare and bake a golden carrying
+  the old agent. After touching either package: `sync -force-prepare`, or a
+  plain `prepare`.
+- **`sync` deletes `out/vanilla-custom.img`, plain `prepare` keeps it.**
+  `prepare.Options.RemoveImage`. Day 0 `dd`s that raw image to a card, so the
+  `prepare` command must not remove it; `sync` never needs it after compressing
+  and 2.9 GB has run `/` out of space mid-capture before.
 - **Never gate on the golden's compressed size.** `seal` deliberately does not
   zero free space, so every capture carries whatever stale bytes are on the
   card and the compressed size tracks the card's history, not the build — a

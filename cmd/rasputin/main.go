@@ -15,17 +15,28 @@ type command struct {
 	name  string
 	usage string
 	short string
-	run   func(cfg *config.Config, args []string) error
+	// needsConfig is false only for `init`, which writes the config the
+	// others load; such a command gets a Config with just Path filled in.
+	needsConfig bool
+	run         func(cfg *config.Config, args []string) error
 }
 
+// Readable values for command.needsConfig.
+const (
+	withConfig    = true
+	withoutConfig = false
+)
+
 var commands = []command{
-	{"prepare", "prepare", "build recovery.gz + vanilla image with custom boot partition", runPrepare},
-	{"adopt", "adopt <node|all>", "install the recovery mechanism on a live node via SSH", runAdopt},
-	{"dryrun", "dryrun <node|all>", "validate the download+decode pipeline on a node, harmlessly", runDryrun},
-	{"bake", "bake", "produce out/golden.img.zst using the builder node", runBake},
-	{"flash", "flash [flags] <node...|all>", "reflash node(s) from the golden image", runFlash},
-	{"status", "status", "table of node, ip, reachable, hostname, build-id, uptime", runStatus},
-	{"serve", "serve", "run the HTTP server standalone (debugging)", runServe},
+	{"init", "init [flags]", "write a starter rasputin.yaml to edit", withoutConfig, runInit},
+	{"sync", "sync [flags]", "do whatever it takes to bring the cluster to the config", withConfig, runSync},
+	{"prepare", "prepare", "build recovery.gz + vanilla image with custom boot partition", withConfig, runPrepare},
+	{"adopt", "adopt <node|all>", "install the recovery mechanism on a live node via SSH", withConfig, runAdopt},
+	{"dryrun", "dryrun <node|all>", "validate the download+decode pipeline on a node, harmlessly", withConfig, runDryrun},
+	{"bake", "bake", "produce out/golden.img.zst using the builder node", withConfig, runBake},
+	{"flash", "flash [flags] <node...|all>", "reflash node(s) from the golden image", withConfig, runFlash},
+	{"status", "status", "table of node, ip, reachable, hostname, build-id, uptime", withConfig, runStatus},
+	{"serve", "serve", "run the HTTP server standalone (debugging)", withConfig, runServe},
 }
 
 func main() {
@@ -60,9 +71,13 @@ func run(argv []string) error {
 		usage(os.Stderr)
 		return fmt.Errorf("unknown command %q", args[0])
 	}
-	cfg, err := config.Load(*cfgPath)
-	if err != nil {
-		return err
+	cfg := &config.Config{Path: *cfgPath}
+	if cmd.needsConfig {
+		loaded, err := config.Load(*cfgPath)
+		if err != nil {
+			return err
+		}
+		cfg = loaded
 	}
 	return cmd.run(cfg, args[1:])
 }

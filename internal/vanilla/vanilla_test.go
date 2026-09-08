@@ -2,6 +2,7 @@ package vanilla
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -79,7 +80,7 @@ func TestUnitEnsureDownloadsDecodesAndRecordsMeta(t *testing.T) {
 		CacheDir:  filepath.Join(dir, "cache"),
 		MetaPath:  filepath.Join(dir, "out/meta/vanilla.json"),
 	}
-	imgPath, meta, err := Ensure(opts)
+	imgPath, meta, err := Ensure(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestUnitEnsureDownloadsDecodesAndRecordsMeta(t *testing.T) {
 	}
 
 	// Second call must be served from the cache.
-	if _, _, err := Ensure(opts); err != nil {
+	if _, _, err := Ensure(context.Background(), opts); err != nil {
 		t.Fatalf("second Ensure: %v", err)
 	}
 	if hits != 1 {
@@ -137,14 +138,14 @@ func TestUnitEnsureRefetchesWhenTheCacheIsTruncated(t *testing.T) {
 		CacheDir:  filepath.Join(dir, "cache"),
 		MetaPath:  filepath.Join(dir, "vanilla.json"),
 	}
-	imgPath, _, err := Ensure(opts)
+	imgPath, _, err := Ensure(context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(imgPath, []byte("truncated"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := Ensure(opts); err != nil {
+	if _, _, err := Ensure(context.Background(), opts); err != nil {
 		t.Fatal(err)
 	}
 	if hits != 2 {
@@ -158,12 +159,12 @@ func TestUnitEnsureRefetchesWhenTheImageIsMissing(t *testing.T) {
 	srv := imageServer(t, "img.img.xz", fakeXZ(t, payload), &hits)
 	dir := t.TempDir()
 	opts := Options{SourceURL: srv.URL + "/latest", CacheDir: filepath.Join(dir, "c"), MetaPath: filepath.Join(dir, "m.json")}
-	imgPath, _, err := Ensure(opts)
+	imgPath, _, err := Ensure(context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	os.Remove(imgPath)
-	if _, _, err := Ensure(opts); err != nil {
+	if _, _, err := Ensure(context.Background(), opts); err != nil {
 		t.Fatal(err)
 	}
 	if hits != 2 {
@@ -181,7 +182,7 @@ func TestUnitEnsureLeavesNoPartialImageOnFailure(t *testing.T) {
 
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
-	_, _, err := Ensure(Options{SourceURL: srv.URL + "/x.img.xz", CacheDir: cacheDir, MetaPath: filepath.Join(dir, "m.json")})
+	_, _, err := Ensure(context.Background(), Options{SourceURL: srv.URL + "/x.img.xz", CacheDir: cacheDir, MetaPath: filepath.Join(dir, "m.json")})
 	if err == nil {
 		t.Fatal("a truncated download was accepted")
 	}
@@ -203,7 +204,7 @@ func TestUnitEnsureRejectsBadResponses(t *testing.T) {
 	}))
 	defer srv.Close()
 	dir := t.TempDir()
-	if _, _, err := Ensure(Options{SourceURL: srv.URL, CacheDir: dir, MetaPath: filepath.Join(dir, "m.json")}); err == nil {
+	if _, _, err := Ensure(context.Background(), Options{SourceURL: srv.URL, CacheDir: dir, MetaPath: filepath.Join(dir, "m.json")}); err == nil {
 		t.Error("a 404 was accepted")
 	}
 
@@ -211,11 +212,11 @@ func TestUnitEnsureRejectsBadResponses(t *testing.T) {
 		w.Write([]byte("this is not xz at all"))
 	}))
 	defer notXZ.Close()
-	if _, _, err := Ensure(Options{SourceURL: notXZ.URL, CacheDir: dir, MetaPath: filepath.Join(dir, "m2.json")}); err == nil {
+	if _, _, err := Ensure(context.Background(), Options{SourceURL: notXZ.URL, CacheDir: dir, MetaPath: filepath.Join(dir, "m2.json")}); err == nil {
 		t.Error("a non-xz body was accepted")
 	}
 
-	if _, _, err := Ensure(Options{}); err == nil {
+	if _, _, err := Ensure(context.Background(), Options{}); err == nil {
 		t.Error("an empty SourceURL was accepted")
 	}
 }

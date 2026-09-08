@@ -62,8 +62,10 @@ func (k Kind) String() string {
 // set; the UI treats them as opaque labels.
 type StepID string
 
-// The steps `rasputin up` knows about, in order.
+// The steps `rasputin sync` knows about, in order.
 const (
+	// StepProbe is the read-only status pass `sync` plans from.
+	StepProbe   StepID = "probe"
 	StepPrepare StepID = "prepare"
 	StepAdopt   StepID = "adopt"
 	StepBake    StepID = "bake"

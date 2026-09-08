@@ -8,6 +8,7 @@
 package prepare
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -45,6 +46,12 @@ type Options struct {
 	// InitramfsOnly stops after building recovery.gz. The Makefile uses it,
 	// and it is the fast path when only the agent has changed.
 	InitramfsOnly bool
+	// RemoveImage deletes the uncompressed out/vanilla-custom.img once it
+	// has been compressed. It is 2.9 GB of regenerable intermediate and the
+	// first thing to delete when the disk runs short, so `rasputin sync` sets
+	// it; the plain `prepare` command leaves it in place because Day 0
+	// writes that file to a card with dd.
+	RemoveImage bool
 	// Log receives progress lines; nil discards them.
 	Log func(format string, args ...any)
 }
@@ -63,10 +70,20 @@ type Meta struct {
 	RecoveryPath string    `json:"recovery_path"`
 	RecoveryHash string    `json:"sha256_recovery"`
 	PreparedAt   time.Time `json:"prepared_at"`
+	// Fingerprint is what this build was made from: see Fingerprint. It is
+	// how `rasputin sync` decides a prepare can be skipped.
+	Fingerprint string `json:"fingerprint"`
 }
 
 // Run performs a full prepare and returns what it built.
-func Run(cfg *config.Config, opts Options) (*Meta, error) {
+//
+// It takes a context because a cold prepare downloads ~500 MB and then moves
+// ~3 GB twice: an aborted `rasputin sync` has to be able to stop it, and the
+// long copies check the context as they stream.
+func Run(ctx context.Context, cfg *config.Config, opts Options) (*Meta, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	logf := opts.Log
 	if logf == nil {
 		logf = func(string, ...any) {}
@@ -96,8 +113,11 @@ func Run(cfg *config.Config, opts Options) (*Meta, error) {
 		return meta, nil
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	logf("ensuring the stock image is cached")
-	basePath, baseMeta, err := vanilla.Ensure(vanilla.Options{
+	basePath, baseMeta, err := vanilla.Ensure(ctx, vanilla.Options{
 		SourceURL: cfg.Image.SourceURL,
 		Log:       logf,
 	})
@@ -106,6 +126,9 @@ func Run(cfg *config.Config, opts Options) (*Meta, error) {
 	}
 	meta.BaseImage = filepath.Base(basePath)
 	meta.BaseURL = baseMeta.ResolvedURL
+	if meta.Fingerprint, err = Fingerprint(cfg, meta.BaseImage); err != nil {
+		return nil, err
+	}
 
 	data, err := provision.NewData(cfg, meta.BaseImage)
 	if err != nil {
@@ -120,18 +143,26 @@ func Run(cfg *config.Config, opts Options) (*Meta, error) {
 	if err := os.MkdirAll(OutDir, 0o755); err != nil {
 		return nil, err
 	}
-	if err := copyFile(basePath, ImagePath); err != nil {
+	if err := copyFile(ctx, basePath, ImagePath); err != nil {
 		return nil, err
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	logf("customising the boot partition")
 	if err := customise(cfg, meta, recovery, files); err != nil {
 		return nil, err
 	}
 
 	logf("compressing %s", ImagePath)
-	if err := compress(meta, logf); err != nil {
+	if err := compress(ctx, meta, logf); err != nil {
 		return nil, err
+	}
+	if opts.RemoveImage {
+		if err := removeIntermediate(ImagePath, logf); err != nil {
+			return nil, err
+		}
 	}
 	if err := writeMeta(meta); err != nil {
 		return nil, err
@@ -191,7 +222,13 @@ func customise(cfg *config.Config, meta *Meta, recovery []byte, files provision.
 	return img.Close()
 }
 
-func compress(meta *Meta, logf func(string, ...any)) error {
+// compress writes the .zst beside the image and renames it into place.
+//
+// The rename is the point: prepare.json is only written when everything
+// succeeded, so a run that dies mid-compress would otherwise leave a
+// truncated out/vanilla-custom.img.zst next to the *previous* run's metadata,
+// and `sync` would happily bake a builder from it.
+func compress(ctx context.Context, meta *Meta, logf func(string, ...any)) error {
 	in, err := os.Open(ImagePath)
 	if err != nil {
 		return err
@@ -203,11 +240,16 @@ func compress(meta *Meta, logf func(string, ...any)) error {
 	}
 	meta.ImagePath, meta.ImageBytes = ImagePath, info.Size()
 
-	out, err := os.Create(ImageZstPath)
+	tmpPath := ImageZstPath + ".tmp"
+	out, err := os.Create(tmpPath)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() {
+		out.Close()
+		// Harmless once the rename has happened, and the whole point before it.
+		os.Remove(tmpPath)
+	}()
 
 	imgHash, zstHash := sha256.New(), sha256.New()
 	enc, err := zstd.NewWriter(io.MultiWriter(out, zstHash),
@@ -216,7 +258,7 @@ func compress(meta *Meta, logf func(string, ...any)) error {
 	if err != nil {
 		return err
 	}
-	n, err := io.Copy(enc, io.TeeReader(in, imgHash))
+	n, err := io.Copy(enc, io.TeeReader(ctxReader{ctx, in}, imgHash))
 	if err != nil {
 		enc.Close()
 		return fmt.Errorf("compressing after %d bytes: %w", n, err)
@@ -231,6 +273,12 @@ func compress(meta *Meta, logf func(string, ...any)) error {
 	if err != nil {
 		return err
 	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, ImageZstPath); err != nil {
+		return err
+	}
 	meta.ZstPath, meta.ZstBytes = ImageZstPath, zstInfo.Size()
 	meta.SHA256Img = hex.EncodeToString(imgHash.Sum(nil))
 	meta.SHA256Zst = hex.EncodeToString(zstHash.Sum(nil))
@@ -239,7 +287,20 @@ func compress(meta *Meta, logf func(string, ...any)) error {
 	return nil
 }
 
-func copyFile(src, dst string) error {
+// removeIntermediate deletes the uncompressed image once the .zst exists.
+// A missing file is not a failure: the caller only wants it gone.
+func removeIntermediate(path string, logf func(string, ...any)) error {
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("removing the intermediate %s: %w", path, err)
+	}
+	logf("removed %s (regenerable intermediate)", path)
+	return nil
+}
+
+func copyFile(ctx context.Context, src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -250,10 +311,24 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := io.Copy(out, ctxReader{ctx, in}); err != nil {
 		return err
 	}
 	return out.Sync()
+}
+
+// ctxReader stops a multi-gigabyte copy at the next block once the run is
+// aborted, instead of at the end of the file.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
 }
 
 // buildID is a sortable, unique-enough stamp: a UTC timestamp plus six

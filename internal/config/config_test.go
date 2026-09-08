@@ -145,3 +145,121 @@ func TestConfigHasNoPasswordField(t *testing.T) {
 		t.Errorf("err = %v, want it to name the rejected field", err)
 	}
 }
+
+// TestRenderTemplateParses is the contract `rasputin init` depends on: the
+// file it writes must load with the documented defaults once the placeholder
+// MACs are replaced.
+func TestRenderTemplateParses(t *testing.T) {
+	data, err := RenderTemplate(TemplateOptions{Nodes: []Node{
+		{Name: "pi1", MAC: "b8:27:eb:01:02:03"},
+		{Name: "pi2", MAC: "b8:27:eb:04:05:06"},
+	}})
+	if err != nil {
+		t.Fatalf("RenderTemplate: %v", err)
+	}
+	c, err := Parse(data, "rasputin.yaml")
+	if err != nil {
+		t.Fatalf("Parse of the rendered template: %v\n%s", err, data)
+	}
+	if c.Cluster != DefaultCluster {
+		t.Errorf("cluster = %q, want %q", c.Cluster, DefaultCluster)
+	}
+	if got := c.Server.ListenPort(); got != DefaultPort {
+		t.Errorf("port = %d, want %d", got, DefaultPort)
+	}
+	if c.Image.RootfsSizeGB != 4 {
+		t.Errorf("rootfs_size_gb = %d, want 4", c.Image.RootfsSizeGB)
+	}
+	if c.Image.SourceURL == "" || !strings.Contains(c.Image.SourceURL, "raspios_lite_arm64_latest") {
+		t.Errorf("source_url = %q, want the arm64 lite latest URL", c.Image.SourceURL)
+	}
+	if len(c.SSH.Users) != 1 || c.SSH.Users[0] != DefaultUser {
+		t.Errorf("ssh.users = %v, want [%s]", c.SSH.Users, DefaultUser)
+	}
+	if c.SSH.Sudo != SudoPasswordless {
+		t.Errorf("ssh.sudo = %q, want %q", c.SSH.Sudo, SudoPasswordless)
+	}
+	if c.Provision.User != DefaultUser {
+		t.Errorf("provision.user = %q, want %q", c.Provision.User, DefaultUser)
+	}
+	if c.Provision.Timezone != "America/Sao_Paulo" || c.Provision.Locale != "en_US.UTF-8" {
+		t.Errorf("timezone/locale = %q/%q", c.Provision.Timezone, c.Provision.Locale)
+	}
+	if len(c.Provision.Packages) != 1 || c.Provision.Packages[0] != "curl" {
+		t.Errorf("packages = %v, want [curl]", c.Provision.Packages)
+	}
+	if c.Timeouts.FlashMinutes != DefaultFlashMinutes || c.Timeouts.BakeMinutes != DefaultBakeMinutes {
+		t.Errorf("timeouts = %+v", c.Timeouts)
+	}
+	if c.Builder != "pi1" {
+		t.Errorf("builder = %q, want the first node pi1", c.Builder)
+	}
+	if got := c.NodeNames(); len(got) != 2 || got[1] != "pi2" {
+		t.Errorf("nodes = %v", got)
+	}
+
+	withBuilder, err := RenderTemplate(TemplateOptions{
+		Builder: "pi2",
+		User:    "pilot",
+		Nodes:   []Node{{Name: "pi1", MAC: "b8:27:eb:01:02:03"}, {Name: "pi2", MAC: "b8:27:eb:04:05:06"}},
+	})
+	if err != nil {
+		t.Fatalf("RenderTemplate: %v", err)
+	}
+	c, err = Parse(withBuilder, "rasputin.yaml")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if c.Builder != "pi2" {
+		t.Errorf("builder = %q, want pi2", c.Builder)
+	}
+	if c.Provision.User != "pilot" || c.SSH.Users[0] != "pilot" {
+		t.Errorf("user = %q / ssh.users = %v, want pilot", c.Provision.User, c.SSH.Users)
+	}
+}
+
+// TestPlaceholderTemplateIsRefused: an unedited `rasputin init` file must not
+// be usable, or a command would go looking for a Pi that cannot exist.
+func TestPlaceholderTemplateIsRefused(t *testing.T) {
+	data, err := RenderTemplate(TemplateOptions{})
+	if err != nil {
+		t.Fatalf("RenderTemplate: %v", err)
+	}
+	if n := strings.Count(string(data), "  - { name: "); n != DefaultNodeCount {
+		t.Errorf("template has %d nodes, want %d", n, DefaultNodeCount)
+	}
+	_, err = Parse(data, "rasputin.yaml")
+	if err == nil {
+		t.Fatal("the placeholder template parsed; every node command would then run against fake MACs")
+	}
+	for _, want := range []string{"rasputin001", "placeholder", "rasputin init", "eth0/address"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to mention %q", err, want)
+		}
+	}
+}
+
+func TestIsPlaceholderMAC(t *testing.T) {
+	cases := []struct {
+		mac  string
+		want bool
+	}{
+		{"00:00:00:00:00:01", true},
+		{"00-00-00-00-00-04", true},
+		{"00:00:00:ff:ff:ff", true},
+		{"b8:27:eb:01:02:03", false},
+		{"00:00:01:00:00:01", false},
+		{"", false},
+		{"not-a-mac", false},
+	}
+	for _, tc := range cases {
+		if got := IsPlaceholderMAC(tc.mac); got != tc.want {
+			t.Errorf("IsPlaceholderMAC(%q) = %v, want %v", tc.mac, got, tc.want)
+		}
+	}
+	for _, n := range PlaceholderNodes(DefaultNodeCount) {
+		if !IsPlaceholderMAC(n.MAC) {
+			t.Errorf("PlaceholderNodes gave %s the non-placeholder mac %s", n.Name, n.MAC)
+		}
+	}
+}

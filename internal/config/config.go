@@ -2,11 +2,14 @@
 package config
 
 import (
+	"bytes"
+	_ "embed"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"text/template"
 
 	"gopkg.in/yaml.v3"
 )
@@ -187,6 +190,11 @@ func (c *Config) Validate() error {
 		if n.Name == "" {
 			return fmt.Errorf("config: node with empty name")
 		}
+		if IsPlaceholderMAC(n.MAC) {
+			return fmt.Errorf("config: node %s still carries the placeholder mac %s "+
+				"written by `rasputin init`: run `cat /sys/class/net/eth0/address` on "+
+				"the Pi and put the real address in %s", n.Name, n.MAC, c.pathOrDefault())
+		}
 		if prev, dup := seen[n.MAC]; dup {
 			return fmt.Errorf("config: nodes %s and %s share mac %s", prev, n.Name, n.MAC)
 		}
@@ -233,6 +241,14 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// pathOrDefault names the file an error should tell the user to edit.
+func (c *Config) pathOrDefault() string {
+	if c.Path == "" {
+		return "rasputin.yaml"
+	}
+	return c.Path
+}
+
 // Node returns the node with the given name, or nil.
 func (c *Config) Node(name string) *Node {
 	for i := range c.Nodes {
@@ -267,4 +283,102 @@ func expandUser(p string) (string, error) {
 		return home, nil
 	}
 	return filepath.Join(home, p[2:]), nil
+}
+
+//go:embed template.yaml
+var templateYAML string
+
+// Starter-config defaults that only `rasputin init` needs. The rest of the
+// defaults live in the const block above because Parse applies them too.
+const (
+	// DefaultUser is the account the golden image is provisioned with.
+	DefaultUser = "berry"
+	// DefaultNodeCount is how many placeholder nodes a fresh config gets.
+	DefaultNodeCount = 4
+	// PlaceholderMACPrefix is the OUI `rasputin init` writes for a node
+	// whose real MAC is not known yet. It is all zeroes, which no real
+	// NIC has, so Validate can refuse an unedited config.
+	PlaceholderMACPrefix = "00:00:00"
+)
+
+// IsPlaceholderMAC reports whether mac is one of the fake addresses written
+// by `rasputin init`, in any of the forms net.ParseMAC accepts.
+func IsPlaceholderMAC(mac string) bool {
+	parsed, err := net.ParseMAC(mac)
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(strings.ToLower(parsed.String()), PlaceholderMACPrefix+":")
+}
+
+// PlaceholderNodes returns n nodes named rasputin001… with placeholder MACs,
+// for a config the user has not filled in yet.
+func PlaceholderNodes(n int) []Node {
+	nodes := make([]Node, 0, n)
+	for i := 1; i <= n; i++ {
+		nodes = append(nodes, Node{
+			Name: fmt.Sprintf("%s%03d", DefaultCluster, i),
+			MAC: fmt.Sprintf("%s:%02x:%02x:%02x", PlaceholderMACPrefix,
+				(i>>16)&0xff, (i>>8)&0xff, i&0xff),
+		})
+	}
+	return nodes
+}
+
+// TemplateOptions steers RenderTemplate. Every field is optional.
+type TemplateOptions struct {
+	// Cluster names the cluster; empty means DefaultCluster.
+	Cluster string
+	// Builder is the node that bakes the golden image; empty means the
+	// first node.
+	Builder string
+	// Nodes is the node list; empty means DefaultNodeCount placeholders.
+	Nodes []Node
+	// User is the account provisioned on the nodes; empty means
+	// DefaultUser.
+	User string
+}
+
+// RenderTemplate returns the contents of a starter rasputin.yaml: the same
+// keys and comments the real one carries, so the file the user edits explains
+// itself. The result parses only once the placeholder MACs are replaced.
+func RenderTemplate(opts TemplateOptions) ([]byte, error) {
+	data := struct {
+		Cluster     string
+		Builder     string
+		User        string
+		Nodes       []Node
+		Placeholder bool
+	}{
+		Cluster: opts.Cluster,
+		Builder: opts.Builder,
+		User:    opts.User,
+		Nodes:   opts.Nodes,
+	}
+	if data.Cluster == "" {
+		data.Cluster = DefaultCluster
+	}
+	if data.User == "" {
+		data.User = DefaultUser
+	}
+	if len(data.Nodes) == 0 {
+		data.Nodes = PlaceholderNodes(DefaultNodeCount)
+	}
+	if data.Builder == "" {
+		data.Builder = data.Nodes[0].Name
+	}
+	for _, n := range data.Nodes {
+		if IsPlaceholderMAC(n.MAC) {
+			data.Placeholder = true
+		}
+	}
+	tmpl, err := template.New("rasputin.yaml").Parse(templateYAML)
+	if err != nil {
+		return nil, fmt.Errorf("config: parse template: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return nil, fmt.Errorf("config: render template: %w", err)
+	}
+	return buf.Bytes(), nil
 }

@@ -3,6 +3,7 @@ package prepare
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,8 @@ func repoPath(p string) string { return filepath.Join("../..", p) }
 func TestImageContents(t *testing.T) {
 	imgPath := repoPath(ImagePath)
 	if _, err := os.Stat(imgPath); err != nil {
+		// `rasputin sync` prepares with RemoveImage, so this gate needs a
+		// plain `prepare` to have run — it keeps the raw image for Day 0.
 		t.Skipf("run `go run ./cmd/rasputin prepare` first: %v", err)
 	}
 	cfg, err := config.Load(repoPath("rasputin.yaml"))
@@ -188,5 +191,179 @@ func TestBuildIDIsStableWithinARun(t *testing.T) {
 func TestReadMetaMissing(t *testing.T) {
 	if _, err := readMetaAt(filepath.Join(t.TempDir(), "absent.json")); err == nil {
 		t.Error("readMetaAt accepted a missing file")
+	}
+}
+
+// fingerprintCfg parses a config whose authorized_keys points at a real file,
+// since provision.NewData reads it.
+func fingerprintCfg(t *testing.T, yaml string) *config.Config {
+	t.Helper()
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_ed25519.pub")
+	const key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEYTESTKEYTESTKEYTESTKEY test@example"
+	if err := os.WriteFile(keyPath, []byte(key+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Parse([]byte(strings.ReplaceAll(yaml, "KEYPATH", keyPath)), "test.yaml")
+	if err != nil {
+		t.Fatalf("parsing the test config: %v", err)
+	}
+	return cfg
+}
+
+const fingerprintYAML = `
+cluster: test
+image:
+  source_url: https://example.invalid/raspios
+  rootfs_size_gb: 4
+ssh:
+  key: KEYPATH
+  users: [berry]
+provision:
+  user: berry
+  authorized_keys: KEYPATH
+  timezone: America/Sao_Paulo
+  locale: en_US.UTF-8
+  packages: [curl]
+builder: rasputin001
+nodes:
+  - { name: rasputin001, mac: "b8:27:eb:00:00:01" }
+  - { name: rasputin002, mac: "b8:27:eb:00:00:02" }
+`
+
+// TestFingerprint pins down prepare's idempotency key: it must be stable for
+// an unchanged config (or `sync` would re-prepare on every run) and must move
+// for anything that changes the bytes written to the boot partition.
+func TestFingerprint(t *testing.T) {
+	base := fingerprintCfg(t, fingerprintYAML)
+	want, err := Fingerprint(base, "base.img")
+	if err != nil {
+		t.Fatalf("Fingerprint: %v", err)
+	}
+
+	again, err := Fingerprint(fingerprintCfg(t, fingerprintYAML), "base.img")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != want {
+		t.Errorf("Fingerprint is not stable: %s then %s (does it still hash the build-host clock?)", want, again)
+	}
+
+	cases := []struct {
+		name string
+		yaml string
+		same bool
+	}{
+		{"a comment only", strings.Replace(fingerprintYAML, "cluster: test", "# a note for the next reader\ncluster: test", 1), true},
+		{"a package added", strings.Replace(fingerprintYAML, "packages: [curl]", "packages: [curl, htop]", 1), false},
+		{"the rootfs cap", strings.Replace(fingerprintYAML, "rootfs_size_gb: 4", "rootfs_size_gb: 8", 1), false},
+		{"the provisioned user", strings.Replace(fingerprintYAML, "user: berry", "user: pi", 1), false},
+		{"a node's mac", strings.Replace(fingerprintYAML, "b8:27:eb:00:00:02", "b8:27:eb:00:00:09", 1), false},
+		{"a timeout", strings.Replace(fingerprintYAML, "builder: rasputin001", "timeouts:\n  bake_minutes: 60\nbuilder: rasputin001", 1), true},
+		// The whole image is built on the stock one this URL names, and it
+		// reaches none of the rendered files: without it in the key, pointing
+		// the config at a new Raspberry Pi OS release would be a no-op run.
+		{"the source url", strings.Replace(fingerprintYAML,
+			"source_url: https://example.invalid/raspios",
+			"source_url: https://example.invalid/raspios-trixie", 1), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Fingerprint(fingerprintCfg(t, tc.yaml), "base.img")
+			if err != nil {
+				t.Fatalf("Fingerprint: %v", err)
+			}
+			if tc.same && got != want {
+				t.Errorf("changing %s changed the fingerprint (%s != %s); prepare would re-run for nothing", tc.name, got, want)
+			}
+			if !tc.same && got == want {
+				t.Errorf("changing %s left the fingerprint at %s; prepare would be skipped and the image would be stale", tc.name, want)
+			}
+		})
+	}
+}
+
+// TestFingerprintTracksTheBaseImage guards the other half of the key: a new
+// stock image must invalidate a prepared one.
+func TestFingerprintTracksTheBaseImage(t *testing.T) {
+	cfg := fingerprintCfg(t, fingerprintYAML)
+	a, err := Fingerprint(cfg, "2026-06-18-raspios.img")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Fingerprint(cfg, "2026-09-01-raspios.img")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b {
+		t.Error("the fingerprint ignores the base image name")
+	}
+}
+
+// TestCompressIsAtomic: prepare.json is only written once everything
+// succeeded, so a compress that dies partway — an abort, or the out-of-disk
+// case CLAUDE.md records — must not leave a truncated
+// out/vanilla-custom.img.zst beside the *previous* run's metadata. `sync` reads
+// only "the file is there" and the fingerprint, and would bake a builder
+// from the short image.
+func TestCompressIsAtomic(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll(OutDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	img := bytes.Repeat([]byte("raspios"), 1<<16)
+	if err := os.WriteFile(ImagePath, img, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	good := []byte("the previous good build")
+	if err := os.WriteFile(ImageZstPath, good, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := compress(ctx, &Meta{}, func(string, ...any) {}); err == nil {
+		t.Fatal("compress reported success on an aborted run")
+	}
+	if got, err := os.ReadFile(ImageZstPath); err != nil || !bytes.Equal(got, good) {
+		t.Errorf("the previous %s was overwritten by a failed compress (%d bytes, %v)",
+			ImageZstPath, len(got), err)
+	}
+	if _, err := os.Stat(ImageZstPath + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("a half-written temp file was left behind: %v", err)
+	}
+
+	meta := &Meta{}
+	if err := compress(context.Background(), meta, func(string, ...any) {}); err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	info, err := os.Stat(ImageZstPath)
+	if err != nil {
+		t.Fatalf("the compressed image: %v", err)
+	}
+	if info.Size() != meta.ZstBytes || meta.ZstBytes == 0 {
+		t.Errorf("%s is %d bytes, meta says %d", ImageZstPath, info.Size(), meta.ZstBytes)
+	}
+}
+
+func TestRemoveIntermediate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vanilla-custom.img")
+	if err := os.WriteFile(path, []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var logged int
+	logf := func(string, ...any) { logged++ }
+	if err := removeIntermediate(path, logf); err != nil {
+		t.Fatalf("removeIntermediate: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the intermediate is still there: %v", err)
+	}
+	if logged != 1 {
+		t.Errorf("logged %d lines, want the deletion to be reported once", logged)
+	}
+	// Deleting twice must be quiet: `sync` sets RemoveImage on every prepare.
+	if err := removeIntermediate(path, logf); err != nil {
+		t.Errorf("removeIntermediate on a missing file: %v", err)
 	}
 }

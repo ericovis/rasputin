@@ -1,0 +1,40 @@
+# rasputin.yaml — written by `rasputin init`. Edit it, then run `rasputin sync`.
+cluster: {{.Cluster}}
+server:
+  port: 8080            # 0 = random free port; bind IP is always auto-detected
+image:
+  source_url: https://downloads.raspberrypi.com/raspios_lite_arm64_latest
+  rootfs_size_gb: 4     # cap for the BAKED golden only: firstrun grows the builder's
+                        # rootfs to this, so a capture streams exactly this many GiB.
+                        # Clones grow to the whole card on first boot, gated by the
+                        # marker seal leaves at /var/lib/rasputin/grow-rootfs.
+                        # Changing it takes effect at `prepare`, not at `bake`.
+ssh:
+  key: ~/.ssh/id_ed25519
+  users: [{{.User}}]   # tried in order when connecting
+  # passwordless -> require NOPASSWD sudo and fail fast without it (default)
+  # password     -> fall back to `sudo -S` on nodes that lack it. The password
+  #                 is never stored here; it comes from $RASPUTIN_SUDO_PASSWORD
+  #                 or a one-time prompt.
+  sudo: passwordless
+provision:
+  user: {{.User}}
+  authorized_keys: ~/.ssh/id_ed25519.pub
+  timezone: America/Sao_Paulo
+  locale: en_US.UTF-8
+  packages: [curl]
+builder: {{.Builder}}   # the node that bakes the golden image; it gets wiped first
+timeouts:
+  flash_minutes: 25
+  bake_minutes: 45
+# A node's identity is its eth0 MAC, never its name or its IP. Read each one
+# off the Pi itself with:
+#   cat /sys/class/net/eth0/address
+{{- if .Placeholder}}
+# The addresses below are PLACEHOLDERS. Every command that touches a node
+# refuses to run until they are replaced with the real ones.
+{{- end}}
+nodes:
+{{- range .Nodes}}
+  - { name: {{.Name}}, mac: "{{.MAC}}" }
+{{- end}}

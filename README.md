@@ -4,13 +4,15 @@ Reflash a headless Raspberry Pi cluster over the network, with one command
 and no physical access.
 
 ```
-rasputin flash all
+rasputin sync
 ```
 
 Every node is a byte-identical clone of one golden image, and every node can
 be rebuilt from scratch remotely — including the node the golden image was
-baked on. There is no Docker, no loop mount, no `sudo` on the build host, and
-nothing to plug in after a node has been adopted once.
+baked on. `sync` works out what is already current and does only the rest, so
+that one command is both the first build and the daily no-op. There is no
+Docker, no loop mount, no `sudo` on the build host, and nothing to plug in
+after a node has been adopted once.
 
 ## How it works
 
@@ -57,14 +59,20 @@ SSH host keys and `machine-id` regenerate themselves.
 ## Quickstart
 
 ```sh
-$EDITOR rasputin.yaml        # nodes, MACs, users, packages, builder
-make build                   # CLI + out/recovery.gz
-go run ./cmd/rasputin prepare      # stock image + customised boot partition
-go run ./cmd/rasputin adopt all    # install recovery on live nodes (no wipe)
-go run ./cmd/rasputin bake         # build the golden image (WIPES the builder)
-go run ./cmd/rasputin flash all    # clone it everywhere, in parallel
-go run ./cmd/rasputin status       # read-only health table
+go run ./cmd/rasputin init   # once: writes a commented rasputin.yaml
+$EDITOR rasputin.yaml        # MACs, users, packages, builder
+go run ./cmd/rasputin sync     # everything else
 ```
+
+`sync` probes the cluster, prints the plan it derived, asks before anything is
+wiped, and then runs only the steps whose outputs are stale — prepare, adopt,
+bake, flash, status. Run it again after editing `rasputin.yaml` and it rebuilds
+exactly what that edit invalidated. Run it on an unchanged cluster and it
+finishes in seconds having touched nothing.
+
+The individual commands it drives (`prepare`, `adopt`, `bake`, `flash`,
+`dryrun`, `status`) are all still there under *Commands*: they are the building
+blocks, and the escape hatch when `sync` decides something you disagree with.
 
 Requirements: Go 1.27 on the build host, an SSH key that reaches the nodes
 (loaded in your agent if it has a passphrase), and a way to run `sudo` on
@@ -83,6 +91,8 @@ Measured on four Pi 3 B over 100 Mbit ethernet, 2026-08-29:
 | `flash <node>` | ~6 min |
 | `flash all` | ~7 min — parallel, and nodes already on the golden build are skipped in ~1 s |
 | `status` | ~2 s |
+| `sync` (nothing stale) | ~5 s — the probe and the final status table, nothing else |
+| `sync` (config changed) | ~25 min — the sum of prepare + bake + flash all |
 
 `flash` skips any node already running the golden build; pass `-force` to
 reflash it anyway. The golden is baked with a small rootfs
@@ -151,9 +161,15 @@ nodes:                   # the MAC is the node's identity; names and IPs
 ```
 
 Anything under `image:` or `provision:` is baked into the image, and the
-values are consumed at **prepare** time, not bake time. After editing them,
-always run the full sequence — `prepare`, then delete the stale
-intermediate, then `bake`:
+values are consumed at **prepare** time, not bake time. Editing one and baking
+without re-preparing silently bakes the *old* value. `sync` notices the edit and
+runs the whole sequence in the right order:
+
+```sh
+go run ./cmd/rasputin sync
+```
+
+By hand it is prepare, delete the stale intermediate, bake, flash:
 
 ```sh
 go run ./cmd/rasputin prepare && rm -f out/vanilla-custom.img
@@ -164,6 +180,97 @@ go run ./cmd/rasputin flash all
 ## Commands
 
 Nodes are named by their config `name`, or `all` for every configured node.
+Flags always come before the positional arguments.
+
+### `init` — write a starting `rasputin.yaml`
+
+```sh
+go run ./cmd/rasputin init
+go run ./cmd/rasputin init -builder pi01 -node pi01=b8:27:eb:01:02:03 -node pi02=b8:27:eb:04:05:06
+```
+
+Writes a fully commented config with working defaults: the latest 64-bit
+Raspberry Pi OS Lite, a 4 GiB baked rootfs, user `berry`, your
+`~/.ssh/id_ed25519` key pair, passwordless sudo, and one package (`curl`).
+Refuses to overwrite an existing file. `-c <path>` before the command chooses
+where it is written.
+
+- `-force` — overwrite an existing config.
+- `-builder <name>` — the node `bake` will wipe (default: the first node).
+- `-node <name>=<mac>` — repeatable; replaces the placeholder node list.
+
+Without `-node` flags it writes four placeholders, `rasputin001`…`rasputin004`,
+with the **placeholder MACs** `00:00:00:00:00:01`…`04`. Those are not valid
+identities, and every node-touching command refuses to run while one is
+present, naming the node in the error. Fill them in with the real ones:
+
+```sh
+ssh <node> cat /sys/class/net/eth0/address
+```
+
+The MAC is what the CLI trusts; the name and the IP are convenience. See
+*Security trade-offs*.
+
+### `sync` — do whatever is needed, and nothing else
+
+```sh
+go run ./cmd/rasputin sync
+```
+
+One idempotent pass over the whole pipeline. It first probes every node
+(read-only, ~2 s; an unreachable node aborts before anything is touched), then
+decides each step from what it found on disk and on the nodes:
+
+| step | runs when | skipped when |
+|---|---|---|
+| `probe` | always — the plan is built from it | never |
+| `prepare` | `rasputin.yaml` or a built-in template changed since the last prepare, or an artifact in `out/` is missing | the fingerprint recorded in `out/meta/prepare.json` still matches the config |
+| `adopt` | a probed node has no recovery agent yet | every node is already adopted |
+| `bake` | `prepare` will run, or there is no golden, or the golden came from an older prepare | `out/meta/golden.json`'s build id matches the current prepare's |
+| `dryrun` | only with `-rehearse` | not in the plan at all otherwise |
+| `flash` | per node: the node's build id differs from the golden's | that node already runs the golden build |
+| `status` | always, last | never |
+
+The prepare fingerprint is a hash of `image.source_url`, the rendered
+provision scripts and `nodes.conf`, so pointing the config at a new stock
+image, adding a package or adding a node re-prepares, and re-flowing a comment
+does not.
+
+The plan is printed before anything runs, each step as RUN or SKIP with its
+reason, ending in a `WILL WIPE:` line naming every node that loses its
+contents. If that line is non-empty, `sync` asks `Proceed? [y/N]` and does
+nothing else without a `y`. With no terminal and no `-yes` it stops and says
+so rather than guessing.
+
+| flag | effect |
+|---|---|
+| `-force` | all three `-force-*` flags at once |
+| `-force-prepare` | rebuild the artifacts even when the fingerprint matches |
+| `-force-bake` | rebake the golden even when it is current (**wipes the builder**) |
+| `-force-flash` | flash every target even when it already runs the golden build |
+| `-rehearse` | run a `dryrun` on every node before the flash |
+| `-yes` | answer the confirmation prompt |
+| `-plain` | line-by-line output instead of the TUI |
+| `-log <path>` | where the run log goes (default `out/sync.log`; `-` disables it) |
+
+On a terminal `sync` draws a live view: per-step state, a per-node bar during
+flash, the current sub-stage during bake, and a tail of the log. **`q` and
+`ctrl-c` are safe** — they cancel the run, and a node caught mid-flash is left
+in the retrying recovery agent exactly as any other interruption would leave
+it, never half-written. `-plain` (used automatically when stdout is not a
+terminal) prints the same events one per line, which is what CI wants.
+
+Either way every event except the polled byte counters is appended to
+`out/sync.log` in the plain format, so the scrollback the TUI dropped is still on
+disk. `-log` moves that file, and `-log -` turns it off. After the run, the per-step
+summary is printed to stdout so it stays in your scrollback, followed by the
+`status` table when the `status` step got to run — a run that stopped early
+prints no health table rather than the pre-run probe, which would describe a
+fleet that no longer exists.
+
+`sync` deletes `out/vanilla-custom.img` once it has been compressed — it is 2.9 GB
+of regenerable intermediate and `bake` only needs the `.zst`. Plain `prepare`
+keeps it, because Day 0 writes it to a card with `dd`.
 
 ### `prepare` — build the artifacts
 
@@ -260,6 +367,17 @@ filesystem, and installs the identity service. From then on the node answers
 
 ```sh
 $EDITOR rasputin.yaml          # e.g. add a package
+go run ./cmd/rasputin sync       # re-prepares, rebakes, reflashes — only what changed
+```
+
+That is the whole loop. `sync` sees the new fingerprint, so it re-prepares,
+rebakes the golden (wiping the builder, after asking), and reflashes every node
+whose build id no longer matches. Change nothing and run it again and it is a
+few seconds of probe and status.
+
+By hand the same thing is:
+
+```sh
 go run ./cmd/rasputin prepare && rm -f out/vanilla-custom.img
 go run ./cmd/rasputin bake     # wipes and rebuilds the builder
 go run ./cmd/rasputin flash all
@@ -306,6 +424,16 @@ your `known_hosts` entries itself after a successful flash, so you should not
 normally see this. If you do — a flash that failed late, or a node reached by
 an address the CLI has not seen — `ssh-keygen -R <host>` clears it.
 
+**`node … still carries the placeholder mac … written by rasputin init`.**
+The node list is still the one `init` wrote. Read each Pi's real address with
+`ssh <node> cat /sys/class/net/eth0/address` and put it in `rasputin.yaml`.
+Nothing that touches a node runs until every MAC is real, because the MAC is
+the only identity the CLI trusts.
+
+**`sync` stopped at the probe.** A node did not answer, and `sync` will not begin a
+multi-step run it cannot finish. Fix that node, or drop it from
+`rasputin.yaml`, and run `sync` again — nothing was touched.
+
 **`sudo needs a password and none was supplied`.** The node has no NOPASSWD
 rule. Either grant one (see *sudo* above) or set `ssh.sudo: password`.
 
@@ -344,12 +472,15 @@ internal/agent    boot, flag selection, switch_root, reflash/dryrun/capture
 internal/bootfs   FAT32 boot-partition editing and config.txt/cmdline.txt patches
 internal/cluster  orchestration: adopt, dryrun, bake, flash, status
 internal/cpio     newc writer and reader
+internal/events   the progress contract between orchestration and any UI
 internal/initramfs  cross-compiles the agent and packs it
 internal/nodes    resolution (name/MAC/IP/all), MAC verification, preflight
 internal/prepare  the prepare pipeline
 internal/provision  firstrun/identity/provision/seal templates
 internal/server   HTTP server: image serving, capture receipt, progress
 internal/sshx     SSH client with user fallback and host-key pinning
+internal/tui      the `sync` terminal UI (the only package that draws)
+internal/up       planning and execution for `sync`: what is stale, in what order
 internal/vanilla  stock image download, xz decode, cache
 ```
 

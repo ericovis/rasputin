@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 
@@ -17,7 +18,7 @@ func runPrepare(cfg *config.Config, args []string) error {
 		return err
 	}
 
-	meta, err := prepare.Run(cfg, prepare.Options{
+	meta, err := prepare.Run(context.Background(), cfg, prepare.Options{
 		InitramfsOnly: *initramfsOnly,
 		Log:           func(format string, a ...any) { fmt.Printf(format+"\n", a...) },
 	})

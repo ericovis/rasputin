@@ -6,6 +6,7 @@
 package vanilla
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -78,7 +79,7 @@ func (o *Options) applyDefaults() {
 
 // Ensure returns the path to a decoded stock image, downloading it only if
 // the cache does not already hold it.
-func Ensure(opts Options) (string, Meta, error) {
+func Ensure(ctx context.Context, opts Options) (string, Meta, error) {
 	opts.applyDefaults()
 	if opts.SourceURL == "" {
 		return "", Meta{}, fmt.Errorf("vanilla: SourceURL is required")
@@ -89,7 +90,7 @@ func Ensure(opts Options) (string, Meta, error) {
 		return meta.ImagePath, meta, nil
 	}
 
-	meta, err := download(opts)
+	meta, err := download(ctx, opts)
 	if err != nil {
 		return "", Meta{}, err
 	}
@@ -118,9 +119,15 @@ func cached(opts Options) (Meta, bool) {
 	return meta, true
 }
 
-func download(opts Options) (Meta, error) {
+func download(ctx context.Context, opts Options) (Meta, error) {
 	opts.Log("fetching %s", opts.SourceURL)
-	resp, err := opts.HTTP.Get(opts.SourceURL)
+	// The request carries the context, so an aborted `sync` stops a download
+	// that is otherwise a gigabyte long: cancelling it fails the body read.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, opts.SourceURL, nil)
+	if err != nil {
+		return Meta{}, fmt.Errorf("fetching %s: %w", opts.SourceURL, err)
+	}
+	resp, err := opts.HTTP.Do(req)
 	if err != nil {
 		return Meta{}, fmt.Errorf("fetching %s: %w", opts.SourceURL, err)
 	}
