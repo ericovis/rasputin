@@ -115,7 +115,7 @@ Each of these has a regression test. If you touch the area, run it.
 
 Four Pi 3 Model B, wired, DHCP on 192.168.0.0/24, 32 GB cards, Raspberry Pi
 OS Trixie (arm64). All four now run the golden image (build
-`20260829T205033Z-307368`) as user **`berry`** — `ericovis` no longer exists
+`20260908T231900Z-cf9898`) as user **`berry`** — `ericovis` no longer exists
 on them. MACs are in `rasputin.yaml`; that is the identity that matters, not
 the name or the IP. `rasputin001` is the builder.
 
