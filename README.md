@@ -378,8 +378,19 @@ and the command list as data. `manual -man` renders it as a man page:
 
 ```sh
 rasputin manual -man | man -l -     # Linux
-make install-man && man rasputin     # anywhere; MANDIR=… to choose the directory
+make install-man && man rasputin     # installs out/rasputin.1 into MANDIR
 ```
+
+`MANDIR` defaults to `/usr/local/share/man/man1`, which is root-owned on
+macOS, so either `sudo make install-man` or point it at Homebrew's
+directory, which is on the man path and writable by you:
+
+```sh
+make install-man MANDIR=/opt/homebrew/share/man/man1
+```
+
+The installed page is a snapshot: rerun the install after editing
+`cmd/rasputin/MANUAL.md`.
 
 ## Day 0: a virgin SD card
 
@@ -528,7 +539,7 @@ internal/vanilla  stock image download, xz decode, cache
 ```sh
 make build        # CLI + recovery.gz + out/rasputin.1
 make test         # go test ./... and a linux/arm64 cross-build
-make install-man  # man rasputin
+make install-man  # man rasputin (MANDIR=/opt/homebrew/share/man/man1 on a Mac without sudo)
 make clean
 ```
 

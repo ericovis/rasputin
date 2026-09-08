@@ -16,8 +16,13 @@ go run ./cmd/rasputin sync    # probe, plan, confirm, then only the stale steps
 go run ./cmd/rasputin sync -plain -yes   # no TUI, no prompt: CI and repro runs
 go run ./cmd/rasputin sync -plan -json   # read-only: what sync would do, as data
 go run ./cmd/rasputin manual             # the embedded manual (cmd/rasputin/MANUAL.md)
-make install-man                         # the same manual as `man rasputin`
+make install-man MANDIR=/opt/homebrew/share/man/man1   # `man rasputin` on this Mac
 ```
+
+`make install-man` defaults to `/usr/local/share/man/man1`, which is
+root-owned here; Homebrew's `man1` is on the man path and writable, and that
+is where the page is installed on this machine. It is a snapshot — reinstall
+after editing `MANUAL.md`.
 
 Every command takes `-json`: stdout becomes newline-delimited JSON objects,
 last one `{"type":"result","command":…,"ok":…}`. The contract is in
