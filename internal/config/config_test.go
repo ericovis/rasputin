@@ -100,8 +100,8 @@ func TestLoadRepoConfig(t *testing.T) {
 	if got := c.NodeNames(); got[0] != "rasputin001" || got[3] != "rasputin004" {
 		t.Errorf("NodeNames = %v", got)
 	}
-	if len(c.Provision.Packages) != 6 {
-		t.Errorf("packages = %v", c.Provision.Packages)
+	if len(c.Provision.Packages) == 0 {
+		t.Errorf("packages = %v, want at least one", c.Provision.Packages)
 	}
 }
 

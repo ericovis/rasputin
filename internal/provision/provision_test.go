@@ -138,17 +138,20 @@ func TestIdentityContent(t *testing.T) {
 }
 
 func TestProvisionServiceContent(t *testing.T) {
-	files, err := Render(repoData(t))
+	d := repoData(t)
+	files, err := Render(d)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := string(files[ProvisionServiceFile])
+	// The package list comes from rasputin.yaml, so assert against what was
+	// loaded rather than a copy of it that goes stale on the next edit.
 	for _, want := range []string{
 		"After=network-online.target",
 		"Wants=network-online.target",
 		"apt-get update",
 		"apt-get install -y",
-		"podman curl htop vim git tmux",
+		d.PackageList(),
 		"Restart=on-failure",
 		"RestartSec=60",
 		"/var/lib/rasputin/provisioned",
