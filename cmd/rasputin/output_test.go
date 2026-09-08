@@ -240,6 +240,41 @@ func TestManual(t *testing.T) {
 	}
 }
 
+// TestManualAsManPage: -man renders the same Markdown as roff that man(1)
+// accepts, with the sections man(7) expects and one .SS per command.
+func TestManualAsManPage(t *testing.T) {
+	cfg := upConfig(t)
+	var buf bytes.Buffer
+	if err := runManual(cfg, testOutput(&buf), []string{"-man"}); err != nil {
+		t.Fatal(err)
+	}
+	page := buf.String()
+	for _, want := range []string{
+		".TH RASPUTIN 1", ".SH NAME", ".SH SYNOPSIS", ".SH DESCRIPTION",
+		".SH COMMANDS", ".SH WHAT IS SAFE, WHAT IS DESTRUCTIVE", ".TS", // tables go through tbl
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("man page lacks %q", want)
+		}
+	}
+	for _, c := range commands {
+		if !strings.Contains(page, ".SS \\fB"+c.name) {
+			t.Errorf("man page has no .SS for %q", c.name)
+		}
+	}
+	if strings.Contains(page, "# rasputin manual") || strings.Contains(page, ".SH 1.") {
+		t.Error("the Markdown title or a numbered section leaked into the man page")
+	}
+
+	buf.Reset()
+	if err := runManual(cfg, jsonOutput(&buf), []string{"-man"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := result(t, &buf); got["man"] != page {
+		t.Error("manual -man -json does not carry the roff under \"man\"")
+	}
+}
+
 // TestSyncJSONStream is the machine contract of the one command that
 // streams: plan first, events, result last, nothing else on stdout.
 func TestSyncJSONStream(t *testing.T) {

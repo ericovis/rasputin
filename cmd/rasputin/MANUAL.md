@@ -6,8 +6,9 @@ be rebuilt remotely, including the node the golden image was baked on.
 
 This manual is written so that a person or a program can read it once and
 operate the tool correctly. It is compiled into the binary: `rasputin manual`
-prints it, `rasputin manual -json` returns it with the command list. The
-source is `cmd/rasputin/MANUAL.md`; the README explains the design.
+prints it, `rasputin manual -man` renders it for `man`, and
+`rasputin manual -json` returns it with the command list. The source is
+`cmd/rasputin/MANUAL.md`; the README explains the design.
 
 ## 1. The mental model in five sentences
 
@@ -149,12 +150,17 @@ Each section lists: what it does, flags, positional arguments, what it
 touches, what the result object contains beyond the envelope
 (`type`, `command`, `ok`, `error`).
 
-### `manual`
+### `manual [-man]`
 
-Prints this manual. Needs no config.
+Prints this manual, as Markdown. Needs no config.
 
-- **Result fields**: `manual` (the Markdown text), `commands` (list of
-  `{name, usage, short}` in the order the usage screen shows them).
+- `-man` prints it as a man page instead, for `man`:
+  `rasputin manual -man | man -l -` on Linux, or
+  `rasputin manual -man > rasputin.1 && man ./rasputin.1` anywhere.
+  `make install-man` installs it so that `man rasputin` works.
+- **Result fields**: `manual` (the Markdown text), `man` (the roff, only
+  with `-man`), `commands` (list of `{name, usage, short}` in the order the
+  usage screen shows them).
 
 ### `init [-force] [-builder <name>] [-node <name>=<mac>]...`
 

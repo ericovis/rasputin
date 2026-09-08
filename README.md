@@ -374,7 +374,12 @@ flag-file line to paste.
 
 Prints `cmd/rasputin/MANUAL.md`, which is compiled in, so whoever holds
 the executable has the whole reference. `manual -json` returns the text
-and the command list as data.
+and the command list as data. `manual -man` renders it as a man page:
+
+```sh
+rasputin manual -man | man -l -     # Linux
+make install-man && man rasputin     # anywhere; MANDIR=… to choose the directory
+```
 
 ## Day 0: a virgin SD card
 
@@ -521,8 +526,9 @@ internal/vanilla  stock image download, xz decode, cache
 ## Development
 
 ```sh
-make build   # CLI + recovery.gz
-make test    # go test ./... and a linux/arm64 cross-build
+make build        # CLI + recovery.gz + out/rasputin.1
+make test         # go test ./... and a linux/arm64 cross-build
+make install-man  # man rasputin
 make clean
 ```
 

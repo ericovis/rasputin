@@ -16,6 +16,7 @@ go run ./cmd/rasputin sync    # probe, plan, confirm, then only the stale steps
 go run ./cmd/rasputin sync -plain -yes   # no TUI, no prompt: CI and repro runs
 go run ./cmd/rasputin sync -plan -json   # read-only: what sync would do, as data
 go run ./cmd/rasputin manual             # the embedded manual (cmd/rasputin/MANUAL.md)
+make install-man                         # the same manual as `man rasputin`
 ```
 
 Every command takes `-json`: stdout becomes newline-delimited JSON objects,
@@ -26,7 +27,9 @@ flag or result field is not done until the manual says so** — the manual is
 what an agent driving the tool reads, and `TestManual` checks every command
 has a section. In JSON mode nothing but JSON may reach stdout: commands print
 through `output.printf` (dropped in JSON mode) and `output.logf` (becomes a
-log object), never `fmt.Print`.
+log object), never `fmt.Print`. `manual -man` renders the same Markdown as
+roff through go-md2man (pure Go, the only dependency added for it); the
+Markdown stays the single source, so there is no `.1` file to keep in step.
 
 `sync` is idempotent and is now the normal way to drive the cluster; the single
 commands stay as the escape hatch. It refuses to start when any node is
