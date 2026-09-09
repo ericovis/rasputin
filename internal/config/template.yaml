@@ -19,6 +19,7 @@ ssh:
   sudo: passwordless
 provision:
   user: {{.User}}
+  # A .pub file path, a public key written inline, or a list mixing both.
   authorized_keys: ~/.ssh/id_ed25519.pub
   timezone: America/Sao_Paulo
   locale: en_US.UTF-8

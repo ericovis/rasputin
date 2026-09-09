@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -43,8 +44,8 @@ func TestParseDefaultsAndNormalization(t *testing.T) {
 	if want := filepath.Join(home, ".ssh/id_ed25519"); c.SSH.Key != want {
 		t.Errorf("ssh.key = %q, want %q", c.SSH.Key, want)
 	}
-	if want := filepath.Join(home, ".ssh/id_ed25519.pub"); c.Provision.AuthorizedKeys != want {
-		t.Errorf("authorized_keys = %q, want %q", c.Provision.AuthorizedKeys, want)
+	if want := filepath.Join(home, ".ssh/id_ed25519.pub"); len(c.Provision.AuthorizedKeys) != 1 || c.Provision.AuthorizedKeys[0] != want {
+		t.Errorf("authorized_keys = %q, want [%q]", c.Provision.AuthorizedKeys, want)
 	}
 }
 
@@ -260,6 +261,42 @@ func TestIsPlaceholderMAC(t *testing.T) {
 	for _, n := range PlaceholderNodes(DefaultNodeCount) {
 		if !IsPlaceholderMAC(n.MAC) {
 			t.Errorf("PlaceholderNodes gave %s the non-placeholder mac %s", n.Name, n.MAC)
+		}
+	}
+}
+
+func TestAuthorizedKeysAcceptsAListOfFilesAndInlineKeys(t *testing.T) {
+	const inline = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEY you@laptop"
+	src := strings.Replace(minimal, "authorized_keys: ~/.ssh/id_ed25519.pub",
+		"authorized_keys:\n    - ~/.ssh/id_ed25519.pub\n    - '"+inline+" '", 1)
+	c, err := Parse([]byte(src), "test.yaml")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	home, _ := os.UserHomeDir()
+	want := KeySources{filepath.Join(home, ".ssh/id_ed25519.pub"), inline}
+	if !reflect.DeepEqual(c.Provision.AuthorizedKeys, want) {
+		t.Errorf("authorized_keys = %q, want %q", c.Provision.AuthorizedKeys, want)
+	}
+
+	bad := strings.Replace(minimal, "authorized_keys: ~/.ssh/id_ed25519.pub", "authorized_keys: {a: b}", 1)
+	if _, err := Parse([]byte(bad), "test.yaml"); err == nil {
+		t.Error("Parse accepted a mapping for authorized_keys")
+	}
+}
+
+func TestIsPublicKey(t *testing.T) {
+	for s, want := range map[string]bool{
+		"ssh-ed25519 AAAA x":               true,
+		"ssh-rsa AAAA x":                   true,
+		"ecdsa-sha2-nistp256 AAAA x":       true,
+		"sk-ssh-ed25519@openssh.com AAAA":  true,
+		"~/.ssh/id_ed25519.pub":            false,
+		"/home/me/ssh-keys/authorized.pub": false,
+		"":                                 false,
+	} {
+		if got := IsPublicKey(s); got != want {
+			t.Errorf("IsPublicKey(%q) = %v, want %v", s, got, want)
 		}
 	}
 }

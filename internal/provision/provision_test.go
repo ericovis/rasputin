@@ -26,7 +26,7 @@ func repoData(t *testing.T) Data {
 	if err := os.WriteFile(keyPath, []byte(key+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg.Provision.AuthorizedKeys = keyPath
+	cfg.Provision.AuthorizedKeys = config.KeySources{keyPath}
 
 	d, err := NewData(cfg, "2026-06-18-raspios-trixie-arm64-lite.img")
 	if err != nil {
@@ -232,7 +232,7 @@ func TestNewDataRejectsAMissingOrEmptyKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Provision.AuthorizedKeys = filepath.Join(t.TempDir(), "absent.pub")
+	cfg.Provision.AuthorizedKeys = config.KeySources{filepath.Join(t.TempDir(), "absent.pub")}
 	if _, err := NewData(cfg, "base.img"); err == nil {
 		t.Error("NewData accepted a missing key file")
 	}
@@ -241,9 +241,36 @@ func TestNewDataRejectsAMissingOrEmptyKey(t *testing.T) {
 	if err := os.WriteFile(empty, []byte("  \n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg.Provision.AuthorizedKeys = empty
+	cfg.Provision.AuthorizedKeys = config.KeySources{empty}
 	if _, err := NewData(cfg, "base.img"); err == nil {
 		t.Error("NewData accepted an empty key file; nodes would be unreachable")
+	}
+}
+
+func TestNewDataJoinsFilesAndInlineKeys(t *testing.T) {
+	cfg, err := config.Load("../../rasputin.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	const fileKey = "ssh-ed25519 AAAAFILE file@host"
+	const inline = "ssh-ed25519 AAAAINLINE inline@host"
+	one := filepath.Join(dir, "one.pub")
+	if err := os.WriteFile(one, []byte(fileKey+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Provision.AuthorizedKeys = config.KeySources{one, inline}
+	d, err := NewData(cfg, "base.img")
+	if err != nil {
+		t.Fatalf("NewData: %v", err)
+	}
+	if want := fileKey + "\n" + inline; d.AuthorizedKeys != want {
+		t.Errorf("AuthorizedKeys = %q, want %q", d.AuthorizedKeys, want)
+	}
+
+	cfg.Provision.AuthorizedKeys = nil
+	if _, err := NewData(cfg, "base.img"); err == nil {
+		t.Error("NewData accepted an empty authorized_keys list; nodes would be unreachable")
 	}
 }
 

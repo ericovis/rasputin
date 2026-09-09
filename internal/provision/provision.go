@@ -53,27 +53,49 @@ type Data struct {
 // PackageList is the space-separated package set, for apt and for logging.
 func (d Data) PackageList() string { return strings.Join(d.Packages, " ") }
 
-// NewData builds the template inputs from the cluster config, reading the
-// public key file named there.
+// NewData builds the template inputs from the cluster config, collecting
+// the authorized keys named there.
 func NewData(cfg *config.Config, baseImage string) (Data, error) {
-	keys, err := os.ReadFile(cfg.Provision.AuthorizedKeys)
+	keys, err := authorizedKeys(cfg.Provision.AuthorizedKeys)
 	if err != nil {
-		return Data{}, fmt.Errorf("reading %s: %w", cfg.Provision.AuthorizedKeys, err)
-	}
-	trimmed := strings.TrimSpace(string(keys))
-	if trimmed == "" {
-		return Data{}, fmt.Errorf("%s is empty; a node with no authorized key would be unreachable", cfg.Provision.AuthorizedKeys)
+		return Data{}, err
 	}
 	return Data{
 		PreparedAt:     time.Now().UTC().Format(time.RFC3339),
 		User:           cfg.Provision.User,
-		AuthorizedKeys: trimmed,
+		AuthorizedKeys: keys,
 		Timezone:       cfg.Provision.Timezone,
 		Locale:         cfg.Provision.Locale,
 		Packages:       cfg.Provision.Packages,
 		RootfsSizeGB:   cfg.Image.RootfsSizeGB,
 		BaseImage:      baseImage,
 	}, nil
+}
+
+// authorizedKeys joins every source into authorized_keys file content:
+// inline keys verbatim, files by their contents. It refuses an empty
+// result, and an empty file, because a node with no key is unreachable.
+func authorizedKeys(sources config.KeySources) (string, error) {
+	if len(sources) == 0 {
+		return "", fmt.Errorf("provision.authorized_keys is not set; a node with no authorized key would be unreachable")
+	}
+	var lines []string
+	for _, src := range sources {
+		if config.IsPublicKey(src) {
+			lines = append(lines, strings.TrimSpace(src))
+			continue
+		}
+		b, err := os.ReadFile(src)
+		if err != nil {
+			return "", fmt.Errorf("reading %s: %w", src, err)
+		}
+		trimmed := strings.TrimSpace(string(b))
+		if trimmed == "" {
+			return "", fmt.Errorf("%s is empty; a node with no authorized key would be unreachable", src)
+		}
+		lines = append(lines, trimmed)
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 // Rendered holds every generated file, keyed by its boot-partition name.

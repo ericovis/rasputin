@@ -294,7 +294,7 @@ func TestNewReadsTheConfiguredKey(t *testing.T) {
 
 	cfg := &config.Config{
 		SSH:       config.SSH{Key: keyPath, Users: []string{"berry", "ericovis"}},
-		Provision: config.Provision{User: "berry", AuthorizedKeys: pubPath},
+		Provision: config.Provision{User: "berry", AuthorizedKeys: config.KeySources{pubPath}},
 	}
 	d, err := New(cfg, nil)
 	if err != nil {

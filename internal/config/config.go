@@ -91,11 +91,50 @@ func (s SSH) NeedsSudoPassword() bool { return s.Sudo == SudoPassword }
 
 // Provision describes the state firstrun.sh bakes into the golden image.
 type Provision struct {
-	User           string   `yaml:"user"`
-	AuthorizedKeys string   `yaml:"authorized_keys"`
-	Timezone       string   `yaml:"timezone"`
-	Locale         string   `yaml:"locale"`
-	Packages       []string `yaml:"packages"`
+	User           string     `yaml:"user"`
+	AuthorizedKeys KeySources `yaml:"authorized_keys"`
+	Timezone       string     `yaml:"timezone"`
+	Locale         string     `yaml:"locale"`
+	Packages       []string   `yaml:"packages"`
+}
+
+// KeySources is the provision.authorized_keys setting: a single entry or a
+// list, where each entry is either a public key line written inline or the
+// path of a file holding one or more of them. It accepts a bare string so
+// the original single-file form keeps working.
+type KeySources []string
+
+// UnmarshalYAML accepts a scalar or a sequence of scalars.
+func (k *KeySources) UnmarshalYAML(n *yaml.Node) error {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		var s string
+		if err := n.Decode(&s); err != nil {
+			return err
+		}
+		*k = KeySources{s}
+		return nil
+	case yaml.SequenceNode:
+		var list []string
+		if err := n.Decode(&list); err != nil {
+			return err
+		}
+		*k = KeySources(list)
+		return nil
+	}
+	return fmt.Errorf("line %d: authorized_keys must be a path, a public key, or a list of them", n.Line)
+}
+
+// IsPublicKey reports whether s is an OpenSSH public key line rather than a
+// file path, judged by its key-type prefix.
+func IsPublicKey(s string) bool {
+	s = strings.TrimSpace(s)
+	for _, prefix := range []string{"ssh-", "ecdsa-", "sk-"} {
+		if strings.HasPrefix(s, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // Timeouts bounds the long-running hardware operations.
@@ -167,8 +206,14 @@ func (c *Config) normalize() error {
 	if c.SSH.Key, err = expandUser(c.SSH.Key); err != nil {
 		return err
 	}
-	if c.Provision.AuthorizedKeys, err = expandUser(c.Provision.AuthorizedKeys); err != nil {
-		return err
+	for i, src := range c.Provision.AuthorizedKeys {
+		if IsPublicKey(src) {
+			c.Provision.AuthorizedKeys[i] = strings.TrimSpace(src)
+			continue
+		}
+		if c.Provision.AuthorizedKeys[i], err = expandUser(src); err != nil {
+			return err
+		}
 	}
 	for i := range c.Nodes {
 		mac, perr := net.ParseMAC(c.Nodes[i].MAC)

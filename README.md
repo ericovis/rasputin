@@ -147,7 +147,9 @@ ssh:
   sudo: passwordless     # or `password` — see the sudo section
 provision:               # what every node ends up with
   user: berry
-  authorized_keys: ~/.ssh/id_ed25519.pub
+  authorized_keys:        # one entry or a list; each is a .pub file path or
+    - ~/.ssh/id_ed25519.pub   # a public key written inline
+    - ssh-ed25519 AAAA... you@laptop
   timezone: America/Sao_Paulo
   locale: en_US.UTF-8
   packages: [podman, curl, htop, vim, git, tmux]
