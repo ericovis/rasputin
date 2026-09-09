@@ -8,13 +8,18 @@
 GO ?= go
 OUT := out
 
+# `prepare -initramfs-only` reads no config value, but the command still
+# loads one. rasputin.yaml is gitignored, so a fresh clone (and CI) has none;
+# the test fixture stands in and produces the identical recovery.gz.
+CONFIG := $(if $(wildcard rasputin.yaml),rasputin.yaml,internal/config/testdata/cluster.yaml)
+
 MANDIR ?= /usr/local/share/man/man1
 
 .PHONY: build man install-man test clean
 
 build: man
 	$(GO) build -o $(OUT)/rasputin ./cmd/rasputin
-	$(GO) run ./cmd/rasputin prepare -initramfs-only
+	$(GO) run ./cmd/rasputin -c $(CONFIG) prepare -initramfs-only
 
 # The man page is rendered from cmd/rasputin/MANUAL.md by the binary itself.
 man:
