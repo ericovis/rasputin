@@ -555,3 +555,7 @@ Pi, and a full `prepare` (a ~500 MB download), stays local. One consequence:
 `internal/prepare`'s `TestImageContents`, the end-to-end check of a prepared
 image, skips unless `out/vanilla-custom.img` exists, so run `prepare` and then
 `go test ./internal/prepare` before trusting an image.
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).
