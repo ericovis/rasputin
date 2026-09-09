@@ -87,8 +87,8 @@ func TestValidationErrors(t *testing.T) {
 	}
 }
 
-func TestLoadRepoConfig(t *testing.T) {
-	c, err := Load("../../rasputin.yaml")
+func TestLoadFixtureConfig(t *testing.T) {
+	c, err := Load("testdata/cluster.yaml")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -134,7 +134,8 @@ func TestSudoModeDefaultsAndValidation(t *testing.T) {
 }
 
 // TestConfigHasNoPasswordField guards the decision that a sudo password must
-// never live in rasputin.yaml, which is committed to git.
+// never live in rasputin.yaml, a plain file that gets backed up, pasted and
+// shared.
 func TestConfigHasNoPasswordField(t *testing.T) {
 	yamlWithSecret := strings.Replace(minimal,
 		"  users: [berry, ericovis]", "  users: [berry, ericovis]\n  sudo_password: hunter2", 1)

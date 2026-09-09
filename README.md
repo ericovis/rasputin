@@ -126,8 +126,8 @@ ssh <user>@<node> "echo '<user> ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.
 
 With `sudo: password`, the password is taken from `$RASPUTIN_SUDO_PASSWORD`,
 or prompted for once (without echo) if that is unset. **It is deliberately
-not a config field**: `rasputin.yaml` is committed to git, and a password in
-git is a password published.
+not a config field**: `rasputin.yaml` gets backed up, pasted and shared, and a
+password in a config file is a password published.
 
 ```sh
 RASPUTIN_SUDO_PASSWORD="$(pass show cluster/sudo)" go run ./cmd/rasputin adopt all
@@ -137,6 +137,10 @@ RASPUTIN_SUDO_PASSWORD="$(pass show cluster/sudo)" go run ./cmd/rasputin adopt a
 
 Everything is driven by one file, `rasputin.yaml`. Pass `-c <path>` before
 the command to use a different one (`rasputin -c other.yaml status`).
+
+The file is gitignored. It lists your nodes' MAC addresses, which is the
+identity the CLI trusts, and that has no business in a public repository:
+keep it in the checkout and back it up somewhere private.
 
 ```yaml
 cluster: rasputin        # name, used in logs

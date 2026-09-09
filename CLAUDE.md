@@ -127,7 +127,9 @@ Four Pi 3 Model B, wired, DHCP on 192.168.0.0/24, 32 GB cards, Raspberry Pi
 OS Trixie (arm64). All four now run the golden image (build
 `20260908T231900Z-cf9898`) as user **`berry`** — `ericovis` no longer exists
 on them. MACs are in `rasputin.yaml`; that is the identity that matters, not
-the name or the IP. `rasputin001` is the builder.
+the name or the IP. **`rasputin.yaml` is gitignored and exists only on this
+Mac** (history was rewritten 2026-09-08 to remove it and the real MACs; the
+tests use `internal/config/testdata/cluster.yaml`, which is made up). `rasputin001` is the builder.
 
 - The owner's SSH key is **passphrase protected** and used through the macOS
   ssh-agent. `sshx` tries the agent first, then the key file.

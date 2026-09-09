@@ -281,8 +281,8 @@ func (r *Resolver) WaitFor(ctx context.Context, node config.Node, timeout time.D
 var arpLine = regexp.MustCompile(`\(([0-9.]+)\) at ([0-9a-fA-F:]+)`)
 
 // ARPTable reads the system ARP table as a MAC-to-IP map. Addresses are
-// normalised, since macOS prints them without leading zeros (b8:27:eb:01:02:03
-// appears as b8:27:eb:01:02:03 but 0a:... appears as a:...).
+// normalised, since macOS prints them without leading zeros (b8:27:eb:0a:0b:0c
+// appears as b8:27:eb:a:b:c).
 func ARPTable() (map[string]string, error) {
 	out, err := exec.Command("arp", "-a", "-n").Output()
 	if err != nil {

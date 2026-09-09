@@ -14,9 +14,9 @@ import (
 
 func repoData(t *testing.T) Data {
 	t.Helper()
-	cfg, err := config.Load("../../rasputin.yaml")
+	cfg, err := config.Load("../config/testdata/cluster.yaml")
 	if err != nil {
-		t.Fatalf("loading the repo config: %v", err)
+		t.Fatalf("loading the fixture config: %v", err)
 	}
 	// The real public key may not exist on every machine that runs these
 	// tests, so substitute a stand-in of the same shape.
@@ -66,7 +66,7 @@ func TestFirstrunContent(t *testing.T) {
 		"visudo -c",
 		"PasswordAuthentication no",
 		"KbdInteractiveAuthentication no",
-		"/usr/share/zoneinfo/America/Sao_Paulo",
+		"/usr/share/zoneinfo/" + d.Timezone,
 		"en_US.UTF-8",
 		"resize2fs",
 		"sfdisk",
@@ -228,7 +228,7 @@ func TestShellSyntax(t *testing.T) {
 }
 
 func TestNewDataRejectsAMissingOrEmptyKey(t *testing.T) {
-	cfg, err := config.Load("../../rasputin.yaml")
+	cfg, err := config.Load("../config/testdata/cluster.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestNewDataRejectsAMissingOrEmptyKey(t *testing.T) {
 }
 
 func TestNewDataJoinsFilesAndInlineKeys(t *testing.T) {
-	cfg, err := config.Load("../../rasputin.yaml")
+	cfg, err := config.Load("../config/testdata/cluster.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}

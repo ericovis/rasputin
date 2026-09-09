@@ -346,7 +346,7 @@ download.
 
 | path | what |
 |---|---|
-| `rasputin.yaml` | the config (committed) |
+| `rasputin.yaml` | the config (gitignored: it holds the nodes' identities) |
 | `out/recovery.gz` | the recovery agent initramfs |
 | `out/vanilla-custom.img[.zst]` | the prepared stock image; the raw one is regenerable and large |
 | `out/golden.img.zst` | the golden image every flash clones |
@@ -355,7 +355,7 @@ download.
 | `out/sync.log` | append-only log of every `sync` event |
 | `cache/` | downloaded stock images |
 
-`out/` and `cache/` are not committed.
+`out/`, `cache/` and `rasputin.yaml` are not committed.
 
 ## 7. Errors you will see, and what they mean
 

@@ -1,3 +1,7 @@
+# The cluster config: it names the nodes' MACs, which is this cluster's
+# identity and nobody else's business. `rasputin init` writes a fresh one.
+/rasputin.yaml
+
 # Build products and caches: regenerable, and several GB.
 out/
 cache/
