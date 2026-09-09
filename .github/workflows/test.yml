@@ -19,8 +19,9 @@
 # the no-hardware end-to-end image gate — skips itself when
 # out/vanilla-custom.img is absent, and on a fresh checkout it always is. A
 # broken boot partition is caught only by `go run ./cmd/rasputin prepare` then
-# `go test ./internal/prepare`, never by a green run here. Likewise the three
-# identity-script tests in internal/provision execute only on the macOS leg.
+# `go test ./internal/prepare`, never by a green run here. The three
+# identity-script tests in internal/provision run only on darwin, so they are
+# covered by `make test` on the owner's Mac, not here.
 
 name: test
 
@@ -40,19 +41,13 @@ concurrency:
 
 jobs:
   test:
-    # Both hosts, because the suite is required to pass on the owner's Mac
-    # (linux-only syscalls live behind build tags with !linux stubs) and the
-    # cross-build target is what actually runs on the nodes.
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    # Linux only: the suite is also required to pass on the owner's Mac, but
+    # that is checked by `make test` there, and one runner is enough here.
+    runs-on: ubuntu-latest
     # Everything here takes a couple of minutes; the cap is so a wedged
     # toolchain or a hung module fetch in `make build` cannot burn the
     # 6-hour default.
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v5

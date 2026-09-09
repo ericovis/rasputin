@@ -551,8 +551,8 @@ server, and image contents are verified by re-reading the FAT partition with
 `go-diskfs` rather than by mounting anything.
 
 `.github/workflows/test.yml` defines the hardware-free CI: `gofmt`, `go vet`,
-`make test` and `make build` on both Ubuntu and macOS, on every push to `main`
-and every pull request. There is no git remote today, so nothing runs it yet —
+`make test` and `make build` on Ubuntu, on every push to `main` and every
+pull request. There is no git remote today, so nothing runs it yet —
 it is the definition that takes effect if this repo is ever hosted on GitHub.
 Nothing that needs a Pi is in it: `sync`, `bake`, `flash`, `adopt`, `dryrun`,
 `serve` and `status` all need the four nodes on the LAN and SSH to them, and
