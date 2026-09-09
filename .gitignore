@@ -1,6 +1,30 @@
+# Build products and caches: regenerable, and several GB.
 out/
 cache/
 *.img
 *.img.zst
 *.img.xz
 recovery.gz
+
+# Anything that could hold a secret. rasputin never writes one of these
+# itself (the sudo password comes from $RASPUTIN_SUDO_PASSWORD or a prompt,
+# host-key pins live in out/state.json) — this is a fence, not a fix.
+.env
+.env.*
+*.pem
+*.key
+*.secret
+*.token
+id_rsa*
+id_ed25519*
+id_ecdsa*
+known_hosts*
+*.log
+
+# Editor, OS and tooling droppings.
+.DS_Store
+.idea/
+.vscode/
+.claude/settings.local.json
+.claude/worktrees/
+.claude/scheduled_tasks.*

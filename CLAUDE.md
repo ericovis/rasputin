@@ -49,10 +49,12 @@ still vets and tests on the Mac.
 
 ## Ground rules
 
-- **No git remote. Never push.** Commit freely; `out/` and `cache/` are
-  gitignored and must stay uncommitted. The `plan/` docs and the `legacy/`
-  shell prototype were removed 2026-08-29; their history (including every
-  hardware bug and its cause) is in git.
+- **The remote is `github.com/ericovis/rasputin`. Commit freely; push only
+  when the owner asks.** `out/` and `cache/` are gitignored and must stay
+  uncommitted, and so must anything that could hold a secret (`.gitignore`
+  lists the patterns). The `plan/` docs and the `legacy/` shell prototype
+  were removed 2026-08-29; their history (including every hardware bug and
+  its cause) is in git.
 - Hardware operations are destructive (a flash is ~6 min, a bake ~16 min,
   both measured 2026-08-29). Confirm with the owner before wiping a node.
 - `bake` needs ~5 GB free on `/`. Disk has run out mid-capture before;

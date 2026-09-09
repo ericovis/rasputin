@@ -58,7 +58,15 @@ SSH host keys and `machine-id` regenerate themselves.
 
 ## Quickstart
 
+Run it from a checkout of the repository: `prepare` compiles the recovery
+agent from `./cmd/agent`, so the CLI expects the module root as its working
+directory. (`go install github.com/ericovis/rasputin/cmd/rasputin@latest`
+gives you the binary, and everything that does not build an image works from
+anywhere, but `prepare`, `bake` and `sync` need the source tree.)
+
 ```sh
+git clone https://github.com/ericovis/rasputin.git
+cd rasputin
 go run ./cmd/rasputin init   # once: writes a commented rasputin.yaml
 $EDITOR rasputin.yaml        # MACs, users, packages, builder
 go run ./cmd/rasputin sync     # everything else
@@ -554,8 +562,7 @@ server, and image contents are verified by re-reading the FAT partition with
 
 `.github/workflows/test.yml` defines the hardware-free CI: `gofmt`, `go vet`,
 `make test` and `make build` on Ubuntu, on every push to `main` and every
-pull request. There is no git remote today, so nothing runs it yet —
-it is the definition that takes effect if this repo is ever hosted on GitHub.
+pull request, at [github.com/ericovis/rasputin](https://github.com/ericovis/rasputin).
 Nothing that needs a Pi is in it: `sync`, `bake`, `flash`, `adopt`, `dryrun`,
 `serve` and `status` all need the four nodes on the LAN and SSH to them, and
 `flash`, `bake` and `sync` are destructive, so they stay a manual, on-hardware

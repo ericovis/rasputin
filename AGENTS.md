@@ -12,5 +12,6 @@ Two documents matter, depending on what you are here to do.
 - **Changing the code**: read [`CLAUDE.md`](CLAUDE.md) (traps, ground rules,
   the JSON/manual contract) and then [`README.md`](README.md) for the design.
 
-`go test ./...` runs without hardware. Nothing in this repository pushes to a
-remote.
+`go test ./...` runs without hardware. The remote is
+`github.com/ericovis/rasputin`; nothing here pushes to it unless the owner
+asks.
