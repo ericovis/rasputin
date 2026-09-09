@@ -58,11 +58,10 @@ SSH host keys and `machine-id` regenerate themselves.
 
 ## Quickstart
 
-Run it from a checkout of the repository: `prepare` compiles the recovery
-agent from `./cmd/agent`, so the CLI expects the module root as its working
-directory. (`go install github.com/ericovis/rasputin/cmd/rasputin@latest`
-gives you the binary, and everything that does not build an image works from
-anywhere, but `prepare`, `bake` and `sync` need the source tree.)
+Run it from a checkout: `prepare` compiles the recovery agent from
+`./cmd/agent`, so `prepare`, `bake` and `sync` need the source tree as the
+working directory. (`go install github.com/ericovis/rasputin/cmd/rasputin@latest`
+is enough for everything else.)
 
 ```sh
 git clone https://github.com/ericovis/rasputin.git
@@ -88,7 +87,7 @@ them — the CLI writes to the boot partition and reboots.
 
 ### How long it takes
 
-Measured on four Pi 3 B over 100 Mbit ethernet, 2026-08-29:
+Measured on four Pi 3 B over 100 Mbit ethernet:
 
 | command | time |
 |---|---|
@@ -138,9 +137,8 @@ RASPUTIN_SUDO_PASSWORD="$(pass show cluster/sudo)" go run ./cmd/rasputin adopt a
 Everything is driven by one file, `rasputin.yaml`. Pass `-c <path>` before
 the command to use a different one (`rasputin -c other.yaml status`).
 
-The file is gitignored. It lists your nodes' MAC addresses, which is the
-identity the CLI trusts, and that has no business in a public repository:
-keep it in the checkout and back it up somewhere private.
+The file is gitignored: it lists your nodes' MAC addresses, the identity the
+CLI trusts. Keep it in the checkout and back it up privately.
 
 ```yaml
 cluster: rasputin        # name, used in logs
@@ -300,17 +298,12 @@ in the retrying recovery agent exactly as any other interruption would leave
 it, never half-written. `-plain` (used automatically when stdout is not a
 terminal) prints the same events one per line, which is what CI wants.
 
-Either way every event except the polled byte counters is appended to
-`out/sync.log` in the plain format, so the scrollback the TUI dropped is still on
-disk. `-log` moves that file, and `-log -` turns it off. After the run, the per-step
-summary is printed to stdout so it stays in your scrollback, followed by the
-`status` table when the `status` step got to run — a run that stopped early
-prints no health table rather than the pre-run probe, which would describe a
-fleet that no longer exists.
+Every event is also appended to `out/sync.log` (`-log <path>` moves it,
+`-log -` turns it off). After the run the per-step summary and, if the run got
+that far, the `status` table are printed to stdout.
 
-`sync` deletes `out/vanilla-custom.img` once it has been compressed — it is 2.9 GB
-of regenerable intermediate and `bake` only needs the `.zst`. Plain `prepare`
-keeps it, because Day 0 writes it to a card with `dd`.
+`sync` deletes the raw `out/vanilla-custom.img` once it is compressed: it is
+~3 GB and only Day 0 needs it. Plain `prepare` keeps it.
 
 ### `prepare` — build the artifacts
 
@@ -365,11 +358,10 @@ already running the golden build is skipped in about a second, so
 
 - `-force` — reflash a node even when it already runs the golden build.
 
-~6 min per node. Up to two nodes flash at full speed simultaneously; three
-or four share the 100 Mbit wire and each slows by roughly a quarter, which
-still beats flashing them one after another. After a successful flash the
-CLI clears your `~/.ssh/known_hosts` entries for the node, so plain `ssh`
-keeps working despite the regenerated host keys.
+~6 min per node; three or four at once share the 100 Mbit wire and each
+slows by about a quarter. After a successful flash the CLI clears your
+`~/.ssh/known_hosts` entries for the node, so plain `ssh` keeps working
+despite the regenerated host keys.
 
 ### `status` — read-only health table
 
@@ -395,16 +387,9 @@ rasputin manual -man | man -l -     # Linux
 make install-man && man rasputin     # installs out/rasputin.1 into MANDIR
 ```
 
-`MANDIR` defaults to `/usr/local/share/man/man1`, which is root-owned on
-macOS, so either `sudo make install-man` or point it at Homebrew's
-directory, which is on the man path and writable by you:
-
-```sh
-make install-man MANDIR=/opt/homebrew/share/man/man1
-```
-
-The installed page is a snapshot: rerun the install after editing
-`cmd/rasputin/MANUAL.md`.
+`MANDIR` defaults to `/usr/local/share/man/man1`; pass another directory
+(`make install-man MANDIR=/opt/homebrew/share/man/man1` on a Mac without
+`sudo`). The installed page is a snapshot: rerun after editing the manual.
 
 ## Day 0: a virgin SD card
 
@@ -447,9 +432,8 @@ go run ./cmd/rasputin bake     # wipes and rebuilds the builder
 go run ./cmd/rasputin flash all
 ```
 
-The `rm` matters: the decompressed intermediate is 2.9 GB of regenerable
-disk, and a bake without a fresh `prepare` would silently reuse values from
-the previous config (see *Configuration*).
+The `rm` matters: the raw intermediate is ~3 GB, and a bake without a fresh
+`prepare` silently reuses the previous config (see *Configuration*).
 
 ## Escape hatch: trigger a flash by hand
 
@@ -517,13 +501,14 @@ you do not own.
   `ssh` keeps working; `ssh-keygen` writes its usual `.old` backup.
 - **Node identity is verified by MAC, not by name.** Every connection reads
   `/sys/class/net/eth0/address` and refuses to act on a machine whose MAC
-  does not match the config. This is not paranoia: this cluster has had two
-  nodes answering to one hostname, and flashing the wrong Pi has no undo.
+  does not match the config: hostnames can collide, and flashing the wrong
+  Pi has no undo.
 - **HTTP, not HTTPS, and no authentication.** Images are served in the clear
   to whoever asks, and any host that can reach the server can fetch one.
   Intended for a trusted LAN only. The image contains your `authorized_keys`
   but no private key.
-- **Passwordless sudo is required** on every managed node.
+- **`sudo` is needed on every managed node**, passwordless by default;
+  `ssh.sudo: password` is the fallback.
 - `out/state.json` is mode 0600 and records which accounts exist on the
   cluster.
 
@@ -564,14 +549,9 @@ pipelines run against `httptest`, the SSH client against an in-process SSH
 server, and image contents are verified by re-reading the FAT partition with
 `go-diskfs` rather than by mounting anything.
 
-`.github/workflows/test.yml` defines the hardware-free CI: `gofmt`, `go vet`,
-`make test` and `make build` on Ubuntu, on every push to `main` and every
-pull request, at [github.com/ericovis/rasputin](https://github.com/ericovis/rasputin).
-Nothing that needs a Pi is in it: `sync`, `bake`, `flash`, `adopt`, `dryrun`,
-`serve` and `status` all need the four nodes on the LAN and SSH to them, and
-`flash`, `bake` and `sync` are destructive, so they stay a manual, on-hardware
-step. A full `prepare` is left out too — it downloads ~500 MB and needs ~3 GB
-free — which means `internal/prepare`'s `TestImageContents` skips there for
-want of `out/vanilla-custom.img`. That gate is local only: run `go run
-./cmd/rasputin prepare` and then `go test ./internal/prepare` before trusting
-an image.
+CI (`.github/workflows/test.yml`) runs `gofmt`, `go vet`, `make test` and
+`make build` on Ubuntu for every push and pull request. Anything that needs a
+Pi, and a full `prepare` (a ~500 MB download), stays local. One consequence:
+`internal/prepare`'s `TestImageContents`, the end-to-end check of a prepared
+image, skips unless `out/vanilla-custom.img` exists, so run `prepare` and then
+`go test ./internal/prepare` before trusting an image.
