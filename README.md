@@ -549,3 +549,16 @@ still vets and tests on the build host, and `GOOS=linux GOARCH=arm64 go build
 pipelines run against `httptest`, the SSH client against an in-process SSH
 server, and image contents are verified by re-reading the FAT partition with
 `go-diskfs` rather than by mounting anything.
+
+`.github/workflows/test.yml` defines the hardware-free CI: `gofmt`, `go vet`,
+`make test` and `make build` on both Ubuntu and macOS, on every push to `main`
+and every pull request. There is no git remote today, so nothing runs it yet —
+it is the definition that takes effect if this repo is ever hosted on GitHub.
+Nothing that needs a Pi is in it: `sync`, `bake`, `flash`, `adopt`, `dryrun`,
+`serve` and `status` all need the four nodes on the LAN and SSH to them, and
+`flash`, `bake` and `sync` are destructive, so they stay a manual, on-hardware
+step. A full `prepare` is left out too — it downloads ~500 MB and needs ~3 GB
+free — which means `internal/prepare`'s `TestImageContents` skips there for
+want of `out/vanilla-custom.img`. That gate is local only: run `go run
+./cmd/rasputin prepare` and then `go test ./internal/prepare` before trusting
+an image.

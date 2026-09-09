@@ -1,0 +1,83 @@
+# CI for rasputin.
+#
+# This runs everything that does NOT need a Raspberry Pi: the unit tests, go
+# vet, a gofmt check, the linux/arm64 CGO_ENABLED=0 cross-build and `make
+# build` (which compiles the CLI, renders the man page and assembles
+# out/recovery.gz by cross-compiling ./cmd/agent — no downloads, no hardware).
+#
+# Deliberately NOT run here, for two different reasons:
+#
+#   * Every command that reaches a node — sync, adopt, dryrun, bake, flash,
+#     status, serve. They need the four Pis on the LAN, SSH to them and the
+#     owner's passphrase-protected key, and flash, bake and sync wipe a node's
+#     card. None of that exists on a runner, so hardware stays a manual step.
+#   * A full `prepare`, which touches only out/ and cache/ and never a node,
+#     but downloads the ~500 MB stock image and needs ~3 GB free. CI runs only
+#     `prepare -initramfs-only`, via `make build`.
+#
+# That second exclusion costs coverage: internal/prepare's TestImageContents —
+# the no-hardware end-to-end image gate — skips itself when
+# out/vanilla-custom.img is absent, and on a fresh checkout it always is. A
+# broken boot partition is caught only by `go run ./cmd/rasputin prepare` then
+# `go test ./internal/prepare`, never by a green run here. Likewise the three
+# identity-script tests in internal/provision execute only on the macOS leg.
+
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Only PRs: cancelling a push run would leave a commit on main that was
+  # neither passed nor failed.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    # Both hosts, because the suite is required to pass on the owner's Mac
+    # (linux-only syscalls live behind build tags with !linux stubs) and the
+    # cross-build target is what actually runs on the nodes.
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Everything here takes a couple of minutes; the cap is so a wedged
+    # toolchain or a hung module fetch in `make build` cannot burn the
+    # 6-hour default.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "these files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # go test ./... plus GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build ./...
+      - name: make test
+        run: make test
+
+      # CLI + out/rasputin.1 + out/recovery.gz (the agent, cross-compiled).
+      - name: make build
+        run: make build
