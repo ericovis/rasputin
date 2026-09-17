@@ -46,6 +46,9 @@ type Options struct {
 	ForceFlash   bool
 	// Rehearse inserts a dryrun before the flash step.
 	Rehearse bool
+	// TrustNewKeys re-pins a node whose host key changed instead of
+	// refusing it.
+	TrustNewKeys bool
 	// Yes is the caller's "do not ask"; up itself never prompts, it only
 	// reports NeedsConfirmation, but the flag travels with the plan so the
 	// caller can record what it was run with.

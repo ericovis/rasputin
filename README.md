@@ -285,6 +285,7 @@ so rather than guessing.
 | `-force-bake` | rebake the golden even when it is current (**wipes the builder**) |
 | `-force-flash` | flash every target even when it already runs the golden build |
 | `-rehearse` | run a `dryrun` on every node before the flash |
+| `-trust-new-keys` | accept and re-pin a node whose SSH host key changed (after a reflash done from another machine) |
 | `-yes` | answer the confirmation prompt |
 | `-plan` | probe, print the plan, and exit without touching anything |
 | `-plain` | line-by-line output instead of the TUI |
@@ -369,6 +370,21 @@ Node, address, SSH user, hostname, build id, provisioned marker, uptime,
 for every configured node. ~2 s. Touches nothing. With `-json` each node is
 an object with `reachable`, `adopted`, `provisioned`, `build_id` and, for a
 node that does not answer, `error`.
+
+### `forget` — drop a stale pinned host key
+
+```sh
+go run ./cmd/rasputin forget rasputin002
+go run ./cmd/rasputin forget all
+```
+
+The CLI pins each node's SSH host key on first sight and drops the pin itself
+whenever it is the one replacing the node's system. If the nodes were
+reflashed from *another* machine, this machine's pins are stale and every
+command refuses to connect. `forget` drops those pins — and nothing else, so
+the cached address survives — after which the next connection pins the key
+the node presents now. `sync -trust-new-keys` is the same decision taken
+mid-run. Touches no node, needs no credentials.
 
 ### `serve` — the HTTP server alone
 
@@ -472,6 +488,13 @@ your `known_hosts` entries itself after a successful flash, so you should not
 normally see this. If you do — a flash that failed late, or a node reached by
 an address the CLI has not seen — `ssh-keygen -R <host>` clears it.
 
+**`host key for … changed`.** The key pinned in `out/state.json` is not the
+one the node presents. That is expected after a reflash done from another
+machine: `rasputin forget <node>` (or `forget all`) drops the stale pin, and
+`rasputin sync -trust-new-keys` re-pins each changed key as it goes. If
+nothing reflashed that node, treat it as an intruder and investigate —
+nothing has been written.
+
 **`node … still carries the placeholder mac … written by rasputin init`.**
 The node list is still the one `init` wrote. Read each Pi's real address with
 `ssh <node> cat /sys/class/net/eth0/address` and put it in `rasputin.yaml`.
@@ -495,7 +518,8 @@ you do not own.
   node generates its own on first boot. The CLI therefore cannot use
   `known_hosts`: it pins each node's key in `out/state.json` on first sight
   and drops the pin itself whenever *it* is the one replacing the system. A
-  key that changes at any other time is reported as an error. After a
+  key that changes at any other time is reported as an error, which `forget`
+  or `sync -trust-new-keys` clears once you know it was a reflash. After a
   successful `flash` or `bake` the CLI also runs `ssh-keygen -R` against your
   own `~/.ssh/known_hosts` for that node's names and addresses, so plain
   `ssh` keeps working; `ssh-keygen` writes its usual `.old` backup.

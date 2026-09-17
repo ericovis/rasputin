@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ericovis/rasputin/internal/cluster"
 	"github.com/ericovis/rasputin/internal/config"
 	"github.com/ericovis/rasputin/internal/prepare"
+	"github.com/ericovis/rasputin/internal/sshx"
 	"github.com/ericovis/rasputin/internal/up"
 )
 
@@ -148,6 +151,11 @@ func TestSyncFlags(t *testing.T) {
 			args:      []string{"-rehearse", "-yes", "-plain", "-log", "-"},
 			want:      up.Options{Rehearse: true, Yes: true, LogPath: "-"},
 			wantPlain: true,
+		},
+		{
+			name: "-trust-new-keys travels with the run",
+			args: []string{"-trust-new-keys"},
+			want: up.Options{TrustNewKeys: true, LogPath: up.DefaultLogPath},
 		},
 		{
 			name:    "a node argument is refused, sync acts on the whole cluster",
@@ -397,6 +405,40 @@ func TestSyncDoesNotPrintThePreRunProbeAsTheFinalState(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "PROV") {
 		t.Errorf("the health table was printed although status never ran:\n%s", out.String())
+	}
+}
+
+// The -trust-new-keys re-pin is logged by the dialer during the probe, long
+// before the run hands the loggers a sink. If it goes through the same
+// switch as the rest of the probe it is dropped, and a silently replaced
+// host key leaves no record at all.
+func TestTheDialerLogsDuringTheProbeAndFollowsTheRun(t *testing.T) {
+	var buf bytes.Buffer
+	logs := newSyncLogging(testOutput(&buf))
+	c := &cluster.Cluster{Dialer: &sshx.Dialer{}}
+	deps := up.Deps{}
+	logs.attach(c, &deps)
+
+	// The probe: the cluster's logger is silent, the dialer's is not.
+	logs.quiet.logf("rasputin002: probing 192.168.0.12")
+	c.Dialer.Log("%s: host key changed, re-pinned (-trust-new-keys)", "rasputin002")
+	if strings.Contains(buf.String(), "probing") {
+		t.Errorf("the probe scribbled over the plan summary:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "rasputin002: host key changed, re-pinned (-trust-new-keys)") {
+		t.Errorf("the re-pin was never reported:\n%s", buf.String())
+	}
+
+	// The run: both follow the sink, so nothing writes under the display.
+	var run []string
+	deps.SetLog(func(format string, args ...any) { run = append(run, fmt.Sprintf(format, args...)) })
+	logs.quiet.logf("flashing")
+	c.Dialer.Log("re-pinned again")
+	if want := []string{"flashing", "re-pinned again"}; !slices.Equal(run, want) {
+		t.Errorf("the run's logger got %q, want %q", run, want)
+	}
+	if strings.Contains(buf.String(), "re-pinned again") {
+		t.Errorf("the dialer wrote past the run's logger:\n%s", buf.String())
 	}
 }
 

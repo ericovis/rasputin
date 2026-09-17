@@ -38,6 +38,7 @@ the identity that matters: every connection verifies
 | `init` | writes `rasputin.yaml` | no (refuses to overwrite without `-force`) | instant |
 | `status` | reads nodes over SSH | **no** | ~2 s |
 | `sync -plan` | reads nodes, reads `out/` | **no** | ~5 s |
+| `forget` | rewrites `out/state.json` | **no** (touches no node) | instant |
 | `prepare` | `out/`, `cache/` | no | ~15 s warm, +4 min on first download |
 | `serve` | listens on a port | no (a node only reflashes if *you* write its flag file) | until interrupted |
 | `dryrun` | reboots the node into the recovery agent and back, never writes its card | no | ~2 min per node |
@@ -138,6 +139,13 @@ escape-hatch and troubleshooting sections of the README: the node's
 recovery agent retries the download forever and never opens the card until
 the image is reachable.
 
+**Nodes were reflashed from another machine.** Their SSH host keys are new,
+but this machine still has the old ones pinned, so every command refuses to
+connect. Drop the stale pins — `rasputin forget all`, or the nodes by name —
+or run the next sync as `rasputin sync -trust-new-keys`, which re-pins each
+changed key as it meets it. Only if the reflash really happened: from here a
+changed key and an impostor look the same.
+
 **Changed the recovery agent's Go code** (`internal/agent`, `internal/initramfs`):
 `sync` cannot see that, so run `rasputin sync -force-prepare`.
 
@@ -196,6 +204,27 @@ ran; a down node is reported in the data, not as a failure.
 A healthy cluster has every node `reachable`, `adopted`, `provisioned` and
 on the same `build_id` as `out/meta/golden.json`.
 
+### `forget <node...|all>`
+
+Drops each named node's pinned SSH host key from `out/state.json`. Touches no
+node, opens no connection, needs no credentials, and keeps everything else
+the cache knows (the last-seen address, the user, the timestamp), so the next
+connection is still the fast one — it simply trusts the key the node presents
+and pins that one instead.
+
+The CLI pins a node's host key the first time it sees it and drops the pin
+itself whenever *it* is the one replacing the node's system. A key that
+changes at any other time is refused, because from here it is
+indistinguishable from another machine answering to that name. This command
+is the operator saying the change was a reflash. `sync -trust-new-keys` is
+the same decision taken mid-run.
+
+- `all` means every node in the config. An unknown name is an error that
+  lists the valid ones; no argument is a usage error.
+- **Result fields**: `nodes` (`[{node, forgotten}]`, in config order;
+  `forgotten` is false when there was nothing pinned, which is still a
+  success) and `forgotten`, the number of pins dropped.
+
 ### `sync [flags]`
 
 The idempotent whole-pipeline command. It probes every node (and refuses to
@@ -212,6 +241,7 @@ runs only the stale steps in order (`probe`, `prepare`, `adopt`, `bake`,
 | `-force-bake` | rebake the golden even when current (**wipes the builder**) |
 | `-force-flash` | flash every node even when already on the golden build |
 | `-rehearse` | insert a `dryrun` of every node before the flash |
+| `-trust-new-keys` | accept and re-pin a changed host key (after a reflash done from another machine). Say this only if you know the node was reflashed. |
 | `-plain` | one line per event instead of the live display |
 | `-json` | plan, events and result as JSON objects (implies `-plain`, never prompts) |
 | `-log <path>` | run log (default `out/sync.log`; `-` disables) |
@@ -351,7 +381,7 @@ download.
 | `out/vanilla-custom.img[.zst]` | the prepared stock image; the raw one is regenerable and large |
 | `out/golden.img.zst` | the golden image every flash clones |
 | `out/meta/prepare.json`, `out/meta/golden.json` | provenance; `sync` plans from these |
-| `out/state.json` | pinned SSH host keys and last-seen IPs (mode 0600) |
+| `out/state.json` | pinned SSH host keys and last-seen IPs (mode 0600); `forget` drops a pin |
 | `out/sync.log` | append-only log of every `sync` event |
 | `cache/` | downloaded stock images |
 
@@ -380,5 +410,12 @@ download.
 - `… answers as MAC …, but … is … — refusing to touch it`
   The machine answering to that name is not the configured node. Stop and
   investigate before doing anything else; nothing was written.
+- `host key for … changed. If the node was reflashed …`
+  The key pinned in `out/state.json` is not the one the node presents. After
+  a reflash done from another machine that is expected: run
+  `rasputin forget <node>` (or `forget all`), or `rasputin sync
+  -trust-new-keys`. If nothing reflashed that node, investigate before
+  trusting it; nothing has been written. `sync` says the same thing in its
+  refusal to plan.
 - `REMOTE HOST IDENTIFICATION HAS CHANGED` (from plain `ssh`, not rasputin)
   A node was reflashed and regenerated its host keys; `ssh-keygen -R <host>`.
