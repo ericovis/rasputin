@@ -12,6 +12,7 @@ import (
 
 	"github.com/ericovis/rasputin/internal/cluster"
 	"github.com/ericovis/rasputin/internal/config"
+	"github.com/ericovis/rasputin/internal/nodes"
 )
 
 // runReset throws away what nodes have written since they were flashed.
@@ -44,7 +45,14 @@ func runReset(cfg *config.Config, out *output, args []string) error {
 		fs.Usage()
 	}
 
-	c, targets, err := setup(cfg, out, fs.Args())
+	// The node list is checked against the config before anything needs
+	// SSH: a typo, or no node at all, must be answered as such and not as
+	// a credentials problem on a machine that has none.
+	targets, err := (&nodes.Resolver{Cfg: cfg}).Select(fs.Args())
+	if err != nil {
+		return err
+	}
+	c, err := newCluster(cfg, out)
 	if err != nil {
 		return err
 	}
