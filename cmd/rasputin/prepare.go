@@ -16,7 +16,7 @@ func runPrepare(cfg *config.Config, out *output, args []string) error {
 		out.printfErr("usage: rasputin prepare [flags]\n\n"+
 			"Builds out/recovery.gz and out/vanilla-custom.img.zst from the stock\n"+
 			"image named in %s. Touches only out/ and cache/, never a node.\n"+
-			"The raw out/vanilla-custom.img is kept for a Day-0 `dd`.\n\nflags:\n", cfg.Path)
+			"The raw out/vanilla-custom.img is kept; write-card decodes the .zst.\n\nflags:\n", cfg.Path)
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
