@@ -20,6 +20,9 @@ const (
 	ModeDryrun Mode = "dryrun"
 	// ModeCapture streams the used part of the card back to the CLI.
 	ModeCapture Mode = "capture"
+	// ModeReset empties the writable layer, so the node boots the golden
+	// image again. It touches nothing else and needs no network.
+	ModeReset Mode = "reset"
 	// ModeError means a flag was found but is unusable (no URL to work
 	// with). The agent only logs in this mode — it never touches the card.
 	ModeError Mode = "error"
@@ -27,20 +30,27 @@ const (
 
 // Flag file names on the boot partition, in decreasing priority. A dryrun
 // must never lose to a reflash: the whole point of a dryrun is not wiping.
+// A reset is last because it is the least destructive of the four, so any
+// other instruction left on the card wins over it.
 const (
 	FlagDryrun  = "reflash-dryrun"
 	FlagCapture = "capture"
 	FlagReflash = "reflash"
+	FlagReset   = "reset"
 )
 
 // flagOrder is the precedence used by SelectMode.
 var flagOrder = []struct {
 	file string
 	mode Mode
+	// needsURL says the mode streams an image and is useless without one.
+	// A reset only deletes files that are already on the card.
+	needsURL bool
 }{
-	{FlagDryrun, ModeDryrun},
-	{FlagCapture, ModeCapture},
-	{FlagReflash, ModeReflash},
+	{FlagDryrun, ModeDryrun, true},
+	{FlagCapture, ModeCapture, true},
+	{FlagReflash, ModeReflash, true},
+	{FlagReset, ModeReset, false},
 }
 
 // SelectMode decides the boot mode from the flag files present on the boot
@@ -58,6 +68,9 @@ func SelectMode(files map[string]string, defaultURL string) (Mode, string) {
 		content, ok := files[f.file]
 		if !ok {
 			continue
+		}
+		if !f.needsURL {
+			return f.mode, ""
 		}
 		url := FirstLine(content)
 		if url == "" {

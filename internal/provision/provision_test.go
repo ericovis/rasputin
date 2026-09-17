@@ -70,6 +70,7 @@ func TestFirstrunContent(t *testing.T) {
 		"en_US.UTF-8",
 		"resize2fs",
 		"sfdisk",
+		"/var/lib/rasputin/layers/lower /var/lib/rasputin/layers/upper",
 		"systemctl enable rasputin-identity.service",
 		"systemctl mask \"$unit\"",
 		"userconfig.service",
@@ -113,12 +114,23 @@ func TestIdentityContent(t *testing.T) {
 		"rasputin-unknown-",
 		"exit 0",
 		"GROW_MARKER=\"${RASPUTIN_GROW_MARKER:-/var/lib/rasputin/grow-rootfs}\"",
-		"sfdisk --no-reread -N 2",
-		"resize2fs",
+		"UPPER_PART=\"${RASPUTIN_UPPER_PART:-${GROW_DISK}p3}\"",
+		"sfdisk --no-reread --append",
+		"mkfs.ext4 -q -L rasputin-upper",
+		"mkdir -p \"$LAYERS_DIR/lower\" \"$LAYERS_DIR/upper\"",
 		"rm -f \"$GROW_MARKER\"",
+		"$REBOOT_CMD",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rasputin-identity is missing %q", want)
+		}
+	}
+	// The rootfs is the overlay's lower layer now and keeps the size it was
+	// baked at; a clone that grew it to the whole card would leave no room
+	// for the writable layer at all.
+	for _, gone := range []string{"resize2fs", "sfdisk --no-reread -N 2"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("rasputin-identity still grows the rootfs (%q)", gone)
 		}
 	}
 
@@ -178,6 +190,9 @@ func TestSealContent(t *testing.T) {
 		"df -Pk /",
 		"exit 1",
 		": > /var/lib/rasputin/grow-rootfs",
+		"dd if=/dev/zero of=/rasputin-zero bs=4M status=none",
+		"rm -f /rasputin-zero",
+		"skipping the zero fill",
 		fmt.Sprintf("ROOTFS_CAP_GB=%d", d.RootfsSizeGB),
 	} {
 		if !strings.Contains(got, want) {
@@ -281,6 +296,13 @@ func TestPackageList(t *testing.T) {
 	}
 }
 
+// --- the one-shot writable layer ---------------------------------------
+//
+// rasputin-identity runs on every boot of every node, so the partitioning it
+// does exactly once has to be gated, retried on failure and never able to
+// block a boot. The tests below render the script and run it for real against
+// stub tools, which is the only way to prove what it does with them.
+
 // renderIdentity renders the identity script to an executable file.
 func renderIdentity(t *testing.T) string {
 	t.Helper()
@@ -295,120 +317,321 @@ func renderIdentity(t *testing.T) string {
 	return path
 }
 
-// fakeTools builds a bin dir of stub sfdisk/resize2fs/blockdev/partx that
-// append their invocation (and stdin, for sfdisk) to a witness file.
-// blockdev records itself too: it is the first tool the grow calls, so the
-// no-marker test can detect an ungated grow even if later steps bail out.
-// resize2fsExit lets one test simulate a failed online resize.
-func fakeTools(t *testing.T, witness string, resize2fsExit int) string {
+// upperSandbox is one rendered identity script plus everywhere it writes.
+type upperSandbox struct {
+	dir     string
+	bin     string
+	witness string
+	marker  string
+	part    string // stands in for /dev/mmcblk0p3
+	fstype  string // what the blkid stub reports for part
+	layers  string
+	reboots string
+}
+
+// newUpperSandbox builds stub sfdisk/partx/blockdev/blkid/mkfs.ext4/reboot
+// that append their invocation (and stdin, for sfdisk) to a witness file.
+// sfdisk creates the partition node the way a real one does, so the script's
+// wait for udev returns at once, and mkfs.ext4 records the filesystem blkid
+// then reports — an unformatted partition is the state the script has to
+// repair. mkfsExit lets a test simulate a failed mkfs.
+func newUpperSandbox(t *testing.T, mkfsExit int) *upperSandbox {
 	t.Helper()
-	bin := t.TempDir()
+	s := &upperSandbox{dir: t.TempDir()}
+	s.bin = filepath.Join(s.dir, "bin")
+	s.witness = filepath.Join(s.dir, "witness")
+	s.marker = filepath.Join(s.dir, "grow-rootfs")
+	s.part = filepath.Join(s.dir, "mmcblk0p3")
+	s.fstype = filepath.Join(s.dir, "fstype")
+	s.layers = filepath.Join(s.dir, "layers")
+	s.reboots = filepath.Join(s.dir, "reboots")
+	if err := os.MkdirAll(s.bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mkfs := fmt.Sprintf("echo \"mkfs.ext4 $*\" >> \"$W\"\nexit %d\n", mkfsExit)
+	if mkfsExit == 0 {
+		mkfs = "echo \"mkfs.ext4 $*\" >> \"$W\"\necho ext4 > '" + s.fstype + "'\n"
+	}
 	stubs := map[string]string{
 		"blockdev":  "echo \"blockdev $*\" >> \"$W\"\necho 32026656768\n",
-		"sfdisk":    "in=$(cat)\necho \"sfdisk $* <<$in>>\" >> \"$W\"\n",
+		"sfdisk":    "in=$(cat)\necho \"sfdisk $* <<$in>>\" >> \"$W\"\n: > '" + s.part + "'\n",
 		"partx":     "echo \"partx $*\" >> \"$W\"\n",
 		"partprobe": "echo \"partprobe $*\" >> \"$W\"\n",
-		"resize2fs": fmt.Sprintf("echo \"resize2fs $*\" >> \"$W\"\nexit %d\n", resize2fsExit),
+		"blkid":     "echo \"blkid $*\" >> \"$W\"\ncat '" + s.fstype + "' 2>/dev/null || true\n",
+		"mkfs.ext4": mkfs,
+		"reboot":    "echo \"reboot $*\" >> '" + s.reboots + "'\n",
 	}
 	for name, body := range stubs {
-		script := "#!/bin/sh\nW='" + witness + "'\n" + body
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
+		script := "#!/bin/sh\nW='" + s.witness + "'\n" + body
+		if err := os.WriteFile(filepath.Join(s.bin, name), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return bin
+	return s
 }
 
-// growSysDir writes the sysfs stand-ins for /sys/block/mmcblk0/mmcblk0p2:
-// p2 starts at sector 1056768 and is currently smaller than the 32 GB card
-// (32,026,656,768 B, as the cluster's cards report), so an attempted grow
-// must reach sfdisk.
-func growSysDir(t *testing.T, dir string) string {
+func (s *upperSandbox) armMarker(t *testing.T) {
 	t.Helper()
-	sys := filepath.Join(dir, "sys")
-	if err := os.MkdirAll(sys, 0o755); err != nil {
+	if err := os.WriteFile(s.marker, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(sys, "start"), []byte("1056768\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sys, "size"), []byte("7331840\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return sys
 }
 
-// runIdentity executes the script with the grow inputs pointed at the sandbox.
-func runIdentity(t *testing.T, script, bin, marker, sysDir string) {
+// makePart creates the partition node. fstype is what blkid will report for
+// it: "" is a partition that was appended but never formatted.
+func (s *upperSandbox) makePart(t *testing.T, fstype string) {
+	t.Helper()
+	if err := os.WriteFile(s.part, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if fstype == "" {
+		return
+	}
+	if err := os.WriteFile(s.fstype, []byte(fstype+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// run executes the rendered script with every path it touches pointed at the
+// sandbox. It must always exit 0: the identity service may never block a boot.
+func (s *upperSandbox) run(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "darwin" {
 		t.Skip("identity script execution is sandboxed only on darwin (no /sys/class/net/eth0)")
 	}
-	cmd := exec.Command("sh", script)
+	cmd := exec.Command("sh", renderIdentity(t))
 	cmd.Env = append(os.Environ(),
-		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"RASPUTIN_GROW_MARKER="+marker,
-		"RASPUTIN_GROW_DISK="+filepath.Join(filepath.Dir(marker), "disk"),
-		"RASPUTIN_GROW_SYS="+sysDir,
+		"PATH="+s.bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"RASPUTIN_GROW_MARKER="+s.marker,
+		"RASPUTIN_GROW_DISK="+filepath.Join(s.dir, "disk"),
+		"RASPUTIN_UPPER_PART="+s.part,
+		"RASPUTIN_LAYERS_DIR="+s.layers,
+		"RASPUTIN_REBOOT_CMD=reboot",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("identity exited non-zero: %v\n%s", err, out)
 	}
 }
 
-func TestIdentityGrowIsGatedByTheMarker(t *testing.T) {
-	dir := t.TempDir()
-	witness := filepath.Join(dir, "witness")
-	bin := fakeTools(t, witness, 0)
-	sys := growSysDir(t, dir)
-	// No marker, but everything else primed for a grow: if the gate were
-	// missing, blockdev (and then sfdisk) would write the witness.
-	runIdentity(t, renderIdentity(t), bin, filepath.Join(dir, "absent-marker"), sys)
-	if _, err := os.Stat(witness); !os.IsNotExist(err) {
-		data, _ := os.ReadFile(witness)
-		t.Errorf("without the marker the grow ran tools:\n%s", data)
+func (s *upperSandbox) trace(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(s.witness)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func TestIdentityUpperIsGatedByTheMarker(t *testing.T) {
+	s := newUpperSandbox(t, 0)
+	// No marker, but everything else primed: an ungated run would partition
+	// the card of a node that has been up for months.
+	s.run(t)
+	if got := s.trace(t); got != "" {
+		t.Errorf("without the marker the identity script ran tools:\n%s", got)
 	}
 }
 
-func TestIdentityGrowRunsOnceWithMarker(t *testing.T) {
-	dir := t.TempDir()
-	witness := filepath.Join(dir, "witness")
-	bin := fakeTools(t, witness, 0)
-	marker := filepath.Join(dir, "grow-rootfs")
-	if err := os.WriteFile(marker, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	sys := growSysDir(t, dir)
-	runIdentity(t, renderIdentity(t), bin, marker, sys)
+func TestIdentityUpperAppendsThePartitionOnceAndReboots(t *testing.T) {
+	s := newUpperSandbox(t, 0)
+	s.armMarker(t)
+	s.run(t)
 
-	data, err := os.ReadFile(witness)
-	if err != nil {
-		t.Fatalf("the grow ran no tools: %v", err)
-	}
-	got := string(data)
-	// want_sectors = 32026656768/512 - 1056768 = 61495296
-	for _, want := range []string{"blockdev --getsize64", "sfdisk --no-reread -N 2", ",61495296", "resize2fs"} {
+	got := s.trace(t)
+	for _, want := range []string{
+		"sfdisk --no-reread --append",
+		"<<,,L>>", // one new partition over whatever free space is left
+		// Only the new partition: partx -a on the whole disk fails because
+		// p1 and p2 are registered already, and its failure would leave the
+		// node waiting for a device node udev was never asked for.
+		"partx -a --nr 3",
+		"mkfs.ext4 -q -L rasputin-upper",
+	} {
 		if !strings.Contains(got, want) {
-			t.Errorf("grow tool trace is missing %q:\n%s", want, got)
+			t.Errorf("tool trace is missing %q:\n%s", want, got)
 		}
 	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Error("the marker survived a successful grow; the grow would re-run every boot")
+	for _, sub := range []string{"lower", "upper"} {
+		if _, err := os.Stat(filepath.Join(s.layers, sub)); err != nil {
+			t.Errorf("the %s mount point was not created: %v", sub, err)
+		}
+	}
+	if _, err := os.Stat(s.marker); !os.IsNotExist(err) {
+		t.Error("the marker survived; the node would repartition on every boot")
+	}
+	// The boot that creates the layer is running on the bare rootfs, so it
+	// must not be allowed to continue on it.
+	if _, err := os.Stat(s.reboots); err != nil {
+		t.Error("the node did not reboot into the overlay after creating the writable layer")
 	}
 }
 
-func TestIdentityGrowKeepsMarkerWhenResizeFails(t *testing.T) {
-	dir := t.TempDir()
-	witness := filepath.Join(dir, "witness")
-	bin := fakeTools(t, witness, 1) // resize2fs fails
-	marker := filepath.Join(dir, "grow-rootfs")
-	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+func TestIdentityUpperIsANoOpWhenTheLayerExists(t *testing.T) {
+	s := newUpperSandbox(t, 0)
+	s.armMarker(t)
+	s.makePart(t, "ext4")
+	s.run(t)
+
+	if got := s.trace(t); strings.Contains(got, "sfdisk") {
+		t.Errorf("an existing writable layer was repartitioned:\n%s", got)
+	}
+	if _, err := os.Stat(s.marker); !os.IsNotExist(err) {
+		t.Error("the marker was kept although there is nothing left to do")
+	}
+	if _, err := os.Stat(s.reboots); err == nil {
+		t.Error("a node with its layer already in place was rebooted for nothing")
+	}
+}
+
+// TestIdentityUpperFormatsAPartitionLeftBehindByAFailedMkfs is the other half
+// of the retry the marker promises: sfdisk has already run, so the partition
+// node is there, but nothing was ever written to it. Taking the node's
+// existence as proof of a finished layer would clear the marker and leave the
+// node unable to mount its layer for the rest of its life.
+func TestIdentityUpperFormatsAPartitionLeftBehindByAFailedMkfs(t *testing.T) {
+	s := newUpperSandbox(t, 0)
+	s.armMarker(t)
+	s.makePart(t, "") // appended by an earlier boot, never formatted
+	s.run(t)
+
+	got := s.trace(t)
+	if !strings.Contains(got, "mkfs.ext4 -q -L rasputin-upper") {
+		t.Errorf("the empty partition was not formatted:\n%s", got)
+	}
+	if strings.Contains(got, "sfdisk") {
+		t.Errorf("a second partition was appended over the first:\n%s", got)
+	}
+	if _, err := os.Stat(s.marker); !os.IsNotExist(err) {
+		t.Error("the marker survived a repaired layer")
+	}
+	if _, err := os.Stat(s.reboots); err != nil {
+		t.Error("the node did not reboot into the overlay after formatting the layer")
+	}
+}
+
+func TestIdentityUpperKeepsTheMarkerWhenMkfsFails(t *testing.T) {
+	s := newUpperSandbox(t, 1) // mkfs.ext4 fails
+	s.armMarker(t)
+	s.run(t)
+
+	if _, err := os.Stat(s.marker); err != nil {
+		t.Error("the marker was cleared even though mkfs failed; the layer would never be built")
+	}
+	if _, err := os.Stat(s.reboots); err == nil {
+		t.Error("the node rebooted into an overlay that was never created")
+	}
+	// The failed mkfs left the partition node behind, and the next boot has
+	// to try again rather than mistake it for a finished layer.
+	if err := os.Remove(s.witness); err != nil {
 		t.Fatal(err)
 	}
-	sys := growSysDir(t, dir)
-	// Must still exit 0: the identity service may never block a boot.
-	runIdentity(t, renderIdentity(t), bin, marker, sys)
-	if _, err := os.Stat(marker); err != nil {
-		t.Error("the marker was cleared even though resize2fs failed; the grow would never retry")
+	s.run(t)
+	if got := s.trace(t); !strings.Contains(got, "mkfs.ext4") {
+		t.Errorf("the next boot did not retry the mkfs:\n%s", got)
+	}
+}
+
+// --- the seal script's zero fill ---------------------------------------------
+//
+// Whether seal writes a couple of gigabytes of zeros or none at all is one
+// comparison, and every substring of that block survives inverting it or
+// reading the wrong df column — so only running it proves anything. The whole
+// script strips the machine it runs on, which is not a thing to do on a Mac,
+// so the tests below slice out the block and drive it against stub tools.
+
+// sealZeroFill runs the rendered seal script's zero-fill block with df
+// reporting a rootfs of fsKB 1-KiB blocks (empty: df answers nothing at all).
+// It returns what the block logged and whether dd was run.
+func sealZeroFill(t *testing.T, fsKB string) (string, bool) {
+	t.Helper()
+	d := repoData(t)
+	files, err := Render(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seal := string(files[SealFile])
+	from := strings.Index(seal, "fs_kb=$(df -Pk /")
+	to := strings.Index(seal, "# Arm the one-shot writable layer")
+	if from < 0 || to < 0 || to < from {
+		t.Fatalf("cannot find the zero-fill block in the rendered seal script:\n%s", seal)
+	}
+
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "log")
+	ddRan := filepath.Join(dir, "dd-ran")
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stubs := map[string]string{
+		// A df -Pk row: field 2 is the filesystem's size, field 3 what it
+		// uses. Reading the wrong one is exactly the mistake that would make
+		// a mis-grown builder fill 30 GB with zeros, so they differ wildly.
+		"df":   "[ -n \"${FS_KB:-}\" ] || exit 0\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted\\n/dev/root %s 12345 999 2%%%% /\\n' \"$FS_KB\"\n",
+		"dd":   ": > '" + ddRan + "'\n",
+		"du":   "printf '2048\\t%s\\n' \"$2\"\n",
+		"sync": "",
+		"rm":   "",
+	}
+	for name, body := range stubs {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	script := fmt.Sprintf("#!/bin/sh\nset -u\nROOTFS_CAP_GB=%d\ncap_bytes=$((ROOTFS_CAP_GB * 1024 * 1024 * 1024))\n"+
+		"log() { echo \"$*\" >> '%s'; }\n%s", d.RootfsSizeGB, logFile, seal[from:to])
+	path := filepath.Join(dir, "zerofill.sh")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", path)
+	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "FS_KB="+fsKB)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the zero-fill block exited non-zero: %v\n%s", err, out)
+	}
+	logged, err := os.ReadFile(logFile)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	_, statErr := os.Stat(ddRan)
+	return string(logged), statErr == nil
+}
+
+// TestSealZeroFillRunsOnACappedRootfs: the whole point of the change is that
+// a builder at image.rootfs_size_gb writes at most cap-minus-used, which is a
+// couple of GB and makes every later flash smaller.
+func TestSealZeroFillRunsOnACappedRootfs(t *testing.T) {
+	logged, ddRan := sealZeroFill(t, "4061000") // a 4 GiB rootfs, as firstrun leaves it
+	if !ddRan {
+		t.Errorf("the zero fill was skipped on a capped rootfs:\n%s", logged)
+	}
+	if !strings.Contains(logged, "filling the free space") {
+		t.Errorf("log = %q, want the fill announced", logged)
+	}
+}
+
+// TestSealZeroFillSkipsAnOvergrownRootfs is the guard's reason to exist: a
+// builder whose rootfs was grown to the whole card would dd tens of gigabytes
+// onto the flash for nothing.
+func TestSealZeroFillSkipsAnOvergrownRootfs(t *testing.T) {
+	logged, ddRan := sealZeroFill(t, "30000000") // grown to a 32 GB card
+	if ddRan {
+		t.Errorf("the zero fill wrote to a rootfs far past the cap:\n%s", logged)
+	}
+	if !strings.Contains(logged, "skipping the zero fill") {
+		t.Errorf("log = %q, want the skip explained", logged)
+	}
+}
+
+// TestSealZeroFillSkipsWhenTheSizeIsUnknown: an unmeasurable rootfs is not a
+// reason to guess, and an empty fs_kb would make every comparison true.
+func TestSealZeroFillSkipsWhenTheSizeIsUnknown(t *testing.T) {
+	logged, ddRan := sealZeroFill(t, "")
+	if ddRan {
+		t.Errorf("the zero fill ran without knowing the size of /:\n%s", logged)
+	}
+	if !strings.Contains(logged, "skipping the zero fill") {
+		t.Errorf("log = %q, want the skip explained", logged)
 	}
 }

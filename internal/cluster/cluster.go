@@ -32,6 +32,7 @@ const (
 	FlagReflash = BootMount + "/reflash"
 	FlagDryrun  = BootMount + "/reflash-dryrun"
 	FlagCapture = BootMount + "/capture"
+	FlagReset   = BootMount + "/reset"
 	DryrunLog   = BootMount + "/reflash-dryrun.log"
 )
 

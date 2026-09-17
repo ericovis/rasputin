@@ -29,14 +29,19 @@ type GoldenMeta struct {
 }
 
 // ReadGoldenMeta loads the golden image's provenance.
-func ReadGoldenMeta() (*GoldenMeta, error) {
-	raw, err := os.ReadFile(GoldenMetaPath)
+func ReadGoldenMeta() (*GoldenMeta, error) { return ReadGoldenMetaAt(GoldenMetaPath) }
+
+// ReadGoldenMetaAt is ReadGoldenMeta from an explicit path, for a caller that
+// keeps its artifacts somewhere else — a test, or an image being written to a
+// card from a copy of out/.
+func ReadGoldenMetaAt(path string) (*GoldenMeta, error) {
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s (run `rasputin bake` first): %w", GoldenMetaPath, err)
+		return nil, fmt.Errorf("reading %s (run `rasputin bake` first): %w", path, err)
 	}
 	var m GoldenMeta
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", GoldenMetaPath, err)
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return &m, nil
 }

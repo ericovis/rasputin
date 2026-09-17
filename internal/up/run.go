@@ -165,6 +165,8 @@ func (r *runner) exec(ctx context.Context, step Step) (string, error) {
 		return r.dryrun(ctx)
 	case events.StepFlash:
 		return r.flash(ctx)
+	case events.StepReset:
+		return r.reset(ctx)
 	case events.StepStatus:
 		return r.statusStep(ctx)
 	}
@@ -314,6 +316,26 @@ func (r *runner) flash(ctx context.Context) (string, error) {
 	return note, nil
 }
 
+// reset wipes the writable layer of the nodes the flash step left alone.
+func (r *runner) reset(ctx context.Context) (string, error) {
+	r.deps.setLog(r.logger(events.StepReset))
+	results := r.deps.Reset(ctx, r.plan.resetTargets)
+	var failures []string
+	for _, res := range results {
+		if res.Err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", res.Node, res.Err))
+			r.phase(events.StepReset, res.Node, "FAILED: "+res.Err.Error())
+			continue
+		}
+		r.phase(events.StepReset, res.Node, "done, back on the golden image")
+	}
+	if len(failures) > 0 {
+		return "", fmt.Errorf("%d of %d node(s) failed to reset:\n%s",
+			len(failures), len(results), strings.Join(failures, "\n"))
+	}
+	return "reset " + plural(len(results), "node"), nil
+}
+
 func (r *runner) statusStep(ctx context.Context) (string, error) {
 	r.deps.setLog(r.logger(events.StepStatus))
 	st := r.deps.Status(ctx, r.plan.targets)
@@ -382,6 +404,7 @@ var phaseRules = []struct{ contains, phase string }{
 	{"waiting for the builder to come back", "the builder is coming back"},
 	{"already running golden build", "already on the golden build"},
 	{"arming a reflash", "downloading the image"},
+	{"arming a reset", "wiping the writable layer"},
 	{"arming a dryrun", "rehearsing"},
 	{"installing recovery.gz", "installing the recovery agent"},
 	{"back up and booting through the recovery agent", "adopted"},

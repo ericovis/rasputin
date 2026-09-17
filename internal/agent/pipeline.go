@@ -256,9 +256,7 @@ func (c *Client) WaitProbe(ctx context.Context, maxTries int) error {
 	}
 }
 
-// Stream downloads the image, decodes it and writes it to dst. The zstd
-// frame checksum is the integrity check: a truncated or corrupted download
-// fails the decode rather than silently writing a broken card.
+// Stream downloads the image and writes it to dst.
 func (c *Client) Stream(ctx context.Context, dst Target) (Stats, error) {
 	start := c.now()
 	req, err := c.request(ctx, http.MethodGet, c.URL, nil)
@@ -274,33 +272,49 @@ func (c *Client) Stream(ctx context.Context, dst Target) (Stats, error) {
 		return Stats{}, fmt.Errorf("GET %s: HTTP %s", c.URL, resp.Status)
 	}
 
-	dec, err := zstd.NewReader(resp.Body, zstd.IgnoreChecksum(false))
+	n, err := WriteImage(ctx, resp.Body, dst, func(written int64) {
+		c.logf("written %d MiB (%.1f MB/s)", written>>20,
+			Stats{Bytes: written, Duration: c.now().Sub(start)}.Rate()/1e6)
+	})
+	return Stats{Bytes: n, Duration: c.now().Sub(start)}, err
+}
+
+// WriteImage decodes a zstd image stream into dst and returns how many bytes
+// came out. The zstd frame checksum is the integrity check: a truncated or
+// corrupted stream fails the decode rather than silently writing a broken
+// card. progress, when non-nil, is called every ProgressInterval bytes with
+// the running total.
+//
+// This is the one image-writing pipeline. The agent streams an image onto a
+// node's card through it over HTTP; anything writing an image from a local
+// file goes through it too, so there is never a second decoder with its own
+// idea of what a good write looks like.
+func WriteImage(ctx context.Context, src io.Reader, dst Target, progress func(written int64)) (int64, error) {
+	dec, err := zstd.NewReader(src, zstd.IgnoreChecksum(false))
 	if err != nil {
-		return Stats{}, fmt.Errorf("zstd reader: %w", err)
+		return 0, fmt.Errorf("zstd reader: %w", err)
 	}
 	defer dec.Close()
 
-	n, err := c.copyWithProgress(ctx, dst, dec.IOReadCloser())
-	stats := Stats{Bytes: n, Duration: c.now().Sub(start)}
+	n, err := copyWithProgress(ctx, dst, dec.IOReadCloser(), progress)
 	if err != nil {
-		return stats, err
+		return n, err
 	}
 	if err := dst.Sync(); err != nil {
-		return stats, fmt.Errorf("sync after %d bytes: %w", n, err)
+		return n, fmt.Errorf("sync after %d bytes: %w", n, err)
 	}
-	return stats, nil
+	return n, nil
 }
 
-// copyWithProgress is io.CopyBuffer with periodic logging and bounded
+// copyWithProgress is io.CopyBuffer with periodic reporting and bounded
 // writeback. On a Target that implements RangeSyncer the just-written range
 // is flushed asynchronously while the previous one is barriered, keeping
 // the card continuously fed (write N -> start N -> await N-1); on any other
 // Target it falls back to a blocking Sync per interval. Either way dirty
 // pages on a 1 GB Pi stay bounded: at most the range being written plus the
 // one draining, ~516 MiB worst case at the 256 MiB interval.
-func (c *Client) copyWithProgress(ctx context.Context, dst Target, src io.Reader) (int64, error) {
+func copyWithProgress(ctx context.Context, dst Target, src io.Reader, progress func(written int64)) (int64, error) {
 	buf := make([]byte, CopyBufferSize)
-	start := c.now()
 	rs, _ := dst.(RangeSyncer)
 	var written, lastReport int64
 	pendingOff := int64(-1) // range with writeback started but not yet awaited
@@ -322,8 +336,9 @@ func (c *Client) copyWithProgress(ctx context.Context, dst Target, src io.Reader
 			if written-lastReport >= ProgressInterval {
 				rangeOff, rangeLen := lastReport, written-lastReport
 				lastReport = written
-				c.logf("written %d MiB (%.1f MB/s)", written>>20,
-					Stats{Bytes: written, Duration: c.now().Sub(start)}.Rate()/1e6)
+				if progress != nil {
+					progress(written)
+				}
 				switch {
 				case rs != nil:
 					if err := rs.StartWriteback(rangeOff, rangeLen); err != nil {

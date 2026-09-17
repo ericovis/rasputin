@@ -20,46 +20,80 @@ log() {
     echo "rasputin: $*"
 }
 
-# --- one-shot rootfs grow on a freshly flashed clone -------------------------
+# --- one-shot writable layer on a freshly flashed clone ----------------------
 # The golden image is baked with a small rootfs (rasputin.yaml
-# image.rootfs_size_gb) so captures and flashes stay short. rasputin-seal
-# drops this marker immediately before the capture, so every clone — and the
-# builder itself, on its first boot after the capture — grows the root
-# filesystem to the whole card exactly once, then clears the marker. This can
-# never inflate a future golden image: a bake always reflashes the builder
-# from the vanilla image first, which resets the partition table, and the
-# marker only ever appears after seal, when the capture is already armed.
-# On any failure the marker is kept so the grow retries on the next boot;
-# a node that boots small can be fixed over SSH, one that does not boot
-# cannot, so nothing here may block the boot.
+# image.rootfs_size_gb) so captures and flashes stay short, and that rootfs
+# stays that size forever: it is the read-only lower layer of an overlay. The
+# rest of the card becomes p3, the writable upper layer, where everything the
+# running system writes actually lands. `rasputin reset` empties p3 in seconds
+# instead of rewriting the whole card.
+#
+# rasputin-seal drops this marker immediately before the capture, so every
+# clone — and the builder itself, on its first boot after the capture — builds
+# its p3 exactly once, then clears the marker. This can never inflate a future
+# golden image: a bake always reflashes the builder from the vanilla image
+# first, which resets the partition table, and the marker only ever appears
+# after seal, when the capture is already armed.
+#
+# On any failure the marker is kept so it retries on the next boot; a node
+# with no writable layer can be fixed over SSH, one that does not boot cannot,
+# so nothing here may block the boot.
 GROW_MARKER="${RASPUTIN_GROW_MARKER:-/var/lib/rasputin/grow-rootfs}"
 GROW_DISK="${RASPUTIN_GROW_DISK:-/dev/mmcblk0}"
-GROW_SYS="${RASPUTIN_GROW_SYS:-/sys/block/mmcblk0/mmcblk0p2}"
+UPPER_PART="${RASPUTIN_UPPER_PART:-${GROW_DISK}p3}"
+LAYERS_DIR="${RASPUTIN_LAYERS_DIR:-/var/lib/rasputin/layers}"
+REBOOT_CMD="${RASPUTIN_REBOOT_CMD:-systemctl reboot}"
 
-grow_to_card() {
-    card_bytes=$(blockdev --getsize64 "$GROW_DISK" 2>/dev/null || echo 0)
-    [ "$card_bytes" -gt 0 ] 2>/dev/null || \
-        { log "grow: cannot read the card size; leaving the marker for the next boot"; return 0; }
-    start=$(cat "$GROW_SYS/start" 2>/dev/null || echo 0)
-    [ "$start" -gt 0 ] 2>/dev/null || \
-        { log "grow: cannot find the rootfs start sector; leaving the marker for the next boot"; return 0; }
-    want_sectors=$((card_bytes / 512 - start))
-    have_sectors=$(cat "$GROW_SYS/size" 2>/dev/null || echo 0)
-    if [ "$have_sectors" -ge "$want_sectors" ]; then
-        log "grow: rootfs partition already fills the card"
-    else
-        log "grow: extending the rootfs partition to the whole card ($card_bytes bytes)"
-        printf ',%s\n' "$want_sectors" | sfdisk --no-reread -N 2 "$GROW_DISK" || \
-            { log "grow: sfdisk failed; leaving the marker for the next boot"; return 0; }
-        partx -u "$GROW_DISK" 2>/dev/null || partprobe "$GROW_DISK" 2>/dev/null || true
+# layer_ready is the only proof that there is nothing left to do: a partition
+# node with no filesystem on it is exactly what a boot whose mkfs failed
+# leaves behind, and treating that as done would strand the node with an
+# unmountable layer forever — the agent would find p3, fail to mount it and
+# boot the bare rootfs on every boot after that.
+layer_ready() {
+    [ -e "$UPPER_PART" ] || return 1
+    [ "$(blkid -s TYPE -o value "$UPPER_PART" 2>/dev/null || echo)" = ext4 ]
+}
+
+make_upper() {
+    if layer_ready; then
+        rm -f "$GROW_MARKER"
+        log "upper: $UPPER_PART already holds a filesystem; marker cleared"
+        return 0
     fi
-    resize2fs "${GROW_DISK}p2" || \
-        { log "grow: resize2fs failed; leaving the marker for the next boot"; return 0; }
+    if [ -e "$UPPER_PART" ]; then
+        # The partition is there but empty: a previous boot got as far as
+        # sfdisk and no further. Formatting it is the whole repair.
+        log "upper: $UPPER_PART has no filesystem; formatting it"
+    else
+        card_bytes=$(blockdev --getsize64 "$GROW_DISK" 2>/dev/null || echo 0)
+        [ "$card_bytes" -gt 0 ] 2>/dev/null || \
+            { log "upper: cannot read the card size; leaving the marker for the next boot"; return 0; }
+        log "upper: appending a writable layer over the free space of $GROW_DISK ($card_bytes bytes)"
+        echo ',,L' | sfdisk --no-reread --append "$GROW_DISK" || \
+            { log "upper: sfdisk --append failed; leaving the marker for the next boot"; return 0; }
+        # partx -a on the whole disk exits non-zero because p1 and p2 are
+        # already registered, so ask it for the one partition that is new.
+        partx -a --nr 3 "$GROW_DISK" 2>/dev/null || partprobe "$GROW_DISK" 2>/dev/null || true
+        # udev may take a moment to create the node the mkfs needs.
+        for _ in 1 2 3 4 5; do
+            [ -e "$UPPER_PART" ] && break
+            sleep 1
+        done
+    fi
+    mkfs.ext4 -q -L rasputin-upper "$UPPER_PART" || \
+        { log "upper: mkfs.ext4 failed; leaving the marker for the next boot"; return 0; }
+    mkdir -p "$LAYERS_DIR/lower" "$LAYERS_DIR/upper"
     rm -f "$GROW_MARKER"
-    log "grow: rootfs now fills the card; marker cleared"
+    sync
+    # Reboot rather than carry on: this boot came up on the bare rootfs, and
+    # no service may keep running on the layer that is about to be underneath
+    # a read-only mount. The next boot goes through the overlay.
+    log "upper: writable layer ready; rebooting into the overlay"
+    $REBOOT_CMD || reboot || log "upper: could not reboot; do it by hand"
+    exit 0
 }
 if [ -f "$GROW_MARKER" ]; then
-    grow_to_card
+    make_upper
 fi
 
 mac=$(cat /sys/class/net/eth0/address 2>/dev/null || echo "")

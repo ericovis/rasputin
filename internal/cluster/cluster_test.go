@@ -49,6 +49,75 @@ func TestStatusTable(t *testing.T) {
 	}
 }
 
+// TestStatusProbesTheOverlay: the probe is the only source of the column
+// below and of `reset`'s precondition, and a node that answers everything
+// else perfectly well would otherwise report a missing overlay in silence.
+func TestStatusProbesTheOverlay(t *testing.T) {
+	sandboxHome(t)
+	for root, want := range map[string]bool{"overlay": true, "ext4": false} {
+		// The node never goes away: this is a probe, not a reboot.
+		d := &resetDialer{downFrom: 99, upFrom: 99, rootBefore: root}
+		c, node := newResetCluster(t, d)
+
+		s := c.statusOf(context.Background(), node)
+
+		if !s.Reachable {
+			t.Fatalf("/ = %s: the node was not reachable: %v", root, s.Err)
+		}
+		if s.Overlay != want {
+			t.Errorf("/ = %s: Overlay = %v, want %v", root, s.Overlay, want)
+		}
+	}
+}
+
+// TestStatusTableReportsTheOverlay: the column is how an operator sees that
+// a node fell back to booting the golden rootfs directly — the one failure
+// `status` was extended to surface, and the reason `reset` refuses a node.
+func TestStatusTableReportsTheOverlay(t *testing.T) {
+	out := StatusTable([]Status{
+		{Name: "rasputin001", MAC: "b8:27:eb:01:02:03", Reachable: true, SSHUser: "berry",
+			Provisioned: true, Overlay: true},
+		{Name: "rasputin002", MAC: "b8:27:eb:04:05:06", Reachable: true, SSHUser: "berry",
+			Provisioned: true},
+		{Name: "rasputin003", MAC: "b8:27:eb:07:08:09"},
+	})
+	for node, want := range map[string]string{
+		"rasputin001": "yes",
+		"rasputin002": "no",
+		// Nothing was asked of a node that never answered, so nothing is
+		// claimed about it either.
+		"rasputin003": "-",
+	} {
+		if got := cellOf(t, out, node, "OVERLAY"); got != want {
+			t.Errorf("%s overlay cell = %q, want %q:\n%s", node, got, want, out)
+		}
+	}
+}
+
+// cellOf reads one cell of a rendered table by its column heading. Only the
+// last column (uptime) may contain spaces, so fields line up with the header.
+func cellOf(t *testing.T, table, node, column string) string {
+	t.Helper()
+	lines := strings.Split(table, "\n")
+	col := -1
+	for i, h := range strings.Fields(lines[0]) {
+		if h == column {
+			col = i
+		}
+	}
+	if col < 0 {
+		t.Fatalf("no %s column in:\n%s", column, table)
+	}
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) > col && fields[0] == node {
+			return fields[col]
+		}
+	}
+	t.Fatalf("no row for %s in:\n%s", node, table)
+	return ""
+}
+
 func TestStatusTableMarksAnAdoptedStockNode(t *testing.T) {
 	out := StatusTable([]Status{{Name: "n", Reachable: true, SSHUser: "berry", Adopted: true}})
 	if !strings.Contains(out, "stock (adopted)") {

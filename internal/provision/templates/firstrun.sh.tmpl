@@ -31,8 +31,10 @@ log "firstrun starting on $(uname -n)"
 
 # --- grow the root filesystem to the configured cap --------------------------
 # Not to the whole card: a capture streams the used prefix of the disk, and a
-# 32 GB rootfs would mean a 32 GB golden image. Clones DO get the whole card:
-# rasputin-identity grows them on first boot, gated by the marker rasputin-seal
+# 32 GB rootfs would mean a 32 GB golden image. This is the size the rootfs
+# keeps for good — on a clone it becomes the read-only lower layer of an
+# overlay, and the rest of the card becomes the writable layer that
+# rasputin-identity appends on first boot, gated by the marker rasputin-seal
 # leaves at /var/lib/rasputin/grow-rootfs just before capture.
 grow_rootfs() {
     disk=/dev/mmcblk0
@@ -127,6 +129,13 @@ if [ -f /etc/locale.gen ]; then
     update-locale LANG={{.Locale}} >/dev/null 2>&1 || true
     log "locale set to {{.Locale}}"
 fi
+
+# --- overlay mount points ----------------------------------------------------
+# The initramfs moves the two layers here once the overlay root is up, so that
+# `df` on the node shows them. They have to exist in the lower layer, because
+# by the time anything could create them the lower layer is read-only.
+install -d -m 0755 /var/lib/rasputin/layers/lower /var/lib/rasputin/layers/upper
+log "created the overlay layer mount points"
 
 # --- identity, provisioning and seal helpers ---------------------------------
 install -m 0755 "$BOOT/rasputin-identity" /usr/local/sbin/rasputin-identity

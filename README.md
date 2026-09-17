@@ -16,7 +16,7 @@ after a node has been adopted once.
 
 ## How it works
 
-Four ideas do all the work.
+Five ideas do all the work.
 
 **The recovery agent is the initramfs.** `cmd/agent` is a single static
 aarch64 binary that *is* `/init`. It is packed into `recovery.gz` (a gzipped
@@ -36,6 +36,7 @@ selects the mode, and its first line, if non-empty, overrides the image URL:
 | `reflash` | stream an image and write the whole card, then reboot |
 | `reflash-dryrun` | run the same pipeline into a discard writer, leave a report, reboot |
 | `capture` | stream the used part of the card back to the CLI (this is how golden images are made) |
+| `reset` | empty the writable layer, then carry on booting — the node is the golden image again |
 
 `reflash-dryrun` beats `capture` beats `reflash`, so a rehearsal can never
 turn into a wipe. This is a plain protocol, not an API: a flag file plus a
@@ -47,6 +48,21 @@ that has to change inside the root filesystem is done *by the Pi itself*, on
 first boot, by a generated `firstrun.sh` launched through the official
 Raspberry Pi Imager mechanism (`systemd.run=` in `cmdline.txt`). That is what
 keeps image preparation to an unprivileged, dependency-free program.
+
+**The golden image is read-only; a third partition holds the changes.** The
+card is a FAT boot partition, the golden root filesystem at
+`image.rootfs_size_gb`, and a writable layer over the rest of the card. The
+agent mounts the root read-only, stacks the writable layer on top as an
+overlay and hands that to systemd, so nothing the running system does ever
+touches the golden bytes. Putting a node back to the image is then deleting
+the upper layer and rebooting — `rasputin reset`, one reboot per node instead
+of six minutes and a whole-card write. The
+node's SSH host keys and machine-id ride across the wipe, because the golden
+image deliberately carries none and those are the node's own. A freshly
+flashed node builds its layer on the first boot and reboots once more into the
+overlay, which adds about a minute to a first flash and nothing afterwards. If
+the layer cannot be mounted the agent boots the golden rootfs directly and
+says so in the kernel log; `status` reports `overlay: no` for such a node.
 
 **Golden images are baked on a Pi.** There is no cross-compilation of a root
 filesystem and no emulation. One node (`builder:` in the config) is reflashed
@@ -97,6 +113,8 @@ Measured on four Pi 3 B over 100 Mbit ethernet:
 | `bake` | ~16 min (capture ~4 min of it) |
 | `flash <node>` | ~6 min |
 | `flash all` | ~7 min — parallel, and nodes already on the golden build are skipped in ~1 s |
+| `reset all` | ~1 min — one reboot per node, in parallel, nothing on the wire |
+| `write-card` | ~4 min for a 4 GB image through a USB 3 reader |
 | `status` | ~2 s |
 | `sync` (nothing stale) | ~5 s — the probe and the final status table, nothing else |
 | `sync` (config changed) | ~25 min — the sum of prepare + bake + flash all |
@@ -104,7 +122,8 @@ Measured on four Pi 3 B over 100 Mbit ethernet:
 `flash` skips any node already running the golden build; pass `-force` to
 reflash it anyway. The golden is baked with a small rootfs
 (`image.rootfs_size_gb`, 4 GiB) so captures and flashes stay short, and every
-clone grows its filesystem to the whole card on first boot.
+clone keeps it at exactly that size: it is the read-only lower layer, and the
+rest of the card becomes the writable layer a `reset` empties.
 
 ### sudo
 
@@ -148,9 +167,10 @@ server:
                          # always auto-detected from the default route.
 image:
   source_url: https://downloads.raspberrypi.com/raspios_lite_arm64_latest
-  rootfs_size_gb: 4      # rootfs cap for the BAKED golden only. Small cap =
-                         # short captures and flashes; every clone grows its
-                         # filesystem to the whole card on first boot.
+  rootfs_size_gb: 4      # size of the root filesystem. Small = short captures
+                         # and flashes; it is also the read-only lower layer
+                         # of every clone, and the rest of the card becomes
+                         # the writable layer.
 ssh:
   key: ~/.ssh/id_ed25519 # the agent is tried first, then this file
   users: [berry]         # SSH users, tried in order
@@ -265,6 +285,7 @@ decides each step from what it found on disk and on the nodes:
 | `bake` | `prepare` will run, or there is no golden, or the golden came from an older prepare | `out/meta/golden.json`'s build id matches the current prepare's |
 | `dryrun` | only with `-rehearse` | not in the plan at all otherwise |
 | `flash` | per node: the node's build id differs from the golden's | that node already runs the golden build |
+| `reset` | only with `-reset`, on every node the run is not flashing that has a writable layer | not requested, every node is being flashed anyway, or no node has a writable layer yet |
 | `status` | always, last | never |
 
 The prepare fingerprint is a hash of `image.source_url`, the rendered
@@ -285,6 +306,7 @@ so rather than guessing.
 | `-force-bake` | rebake the golden even when it is current (**wipes the builder**) |
 | `-force-flash` | flash every target even when it already runs the golden build |
 | `-rehearse` | run a `dryrun` on every node before the flash |
+| `-reset` | wipe the writable layer of every node the run is not flashing |
 | `-trust-new-keys` | accept and re-pin a node whose SSH host key changed (after a reflash done from another machine) |
 | `-yes` | answer the confirmation prompt |
 | `-plan` | probe, print the plan, and exit without touching anything |
@@ -304,7 +326,8 @@ Every event is also appended to `out/sync.log` (`-log <path>` moves it,
 that far, the `status` table are printed to stdout.
 
 `sync` deletes the raw `out/vanilla-custom.img` once it is compressed: it is
-~3 GB and only Day 0 needs it. Plain `prepare` keeps it.
+~3 GB and nothing needs it — `write-card` decodes the `.zst`. Plain `prepare`
+keeps it.
 
 ### `prepare` — build the artifacts
 
@@ -364,12 +387,54 @@ slows by about a quarter. After a successful flash the CLI clears your
 `~/.ssh/known_hosts` entries for the node, so plain `ssh` keeps working
 despite the regenerated host keys.
 
+### `reset <node...|all>` — back to the golden image, in seconds
+
+```sh
+go run ./cmd/rasputin reset all
+go run ./cmd/rasputin reset -yes rasputin002
+```
+
+Empties each node's writable layer and reboots it: everything written since
+the node was flashed or last reset is gone, `/home` included, and the golden
+image underneath is untouched. No image crosses the wire and the card is not
+rewritten. The node's SSH host keys and machine-id are carried over, so
+nothing has to be re-pinned. Nodes reset in parallel; it asks before it starts
+unless `-yes`.
+
+A node whose root is not an overlay — one flashed from a golden image built
+before the writable layer existed — is refused rather than rebooted for
+nothing. `status` shows which nodes qualify.
+
+### `write-card` — put an image on a card in this machine
+
+```sh
+go run ./cmd/rasputin write-card                    # pick the reader from a list
+go run ./cmd/rasputin write-card -image vanilla     # the day 0 card
+go run ./cmd/rasputin write-card -device /dev/disk4 -yes
+```
+
+The only write that does not go over the network, for the two cards the
+network cannot reach: the first card of a node that has never been adopted,
+and a replacement for a card that died. Without `-device` it lists the
+removable disks it can find and asks which one — arrow keys, enter to write,
+`q` to cancel; `-device` names it instead, and a path that is not a device is
+written as a plain file, which is how an image is exported. **Everything on
+the chosen disk is erased**, so it asks unless `-yes`, and with `-json` it
+refuses to choose a disk at all.
+
+The disk is unmounted first and ejected afterwards. The image is decoded by
+the same pipeline the recovery agent uses on a node, must account for every
+byte it decodes to in its own partition table, and the first sector is read
+back from the card afterwards — a write-protected or failing card is reported
+rather than believed. Writing a disk node needs `sudo`; the error says so.
+Finding the reader is macOS-only (`diskutil`), writing is not.
+
 ### `status` — read-only health table
 
-Node, address, SSH user, hostname, build id, provisioned marker, uptime,
-for every configured node. ~2 s. Touches nothing. With `-json` each node is
-an object with `reachable`, `adopted`, `provisioned`, `build_id` and, for a
-node that does not answer, `error`.
+Node, address, SSH user, hostname, build id, provisioned marker, overlay,
+uptime, for every configured node. ~2 s. Touches nothing. With `-json` each
+node is an object with `reachable`, `adopted`, `provisioned`, `overlay`,
+`build_id` and, for a node that does not answer, `error`.
 
 ### `forget` — drop a stale pinned host key
 
@@ -414,19 +479,19 @@ card needs one physical write, after which the node is remotely manageable
 forever:
 
 ```sh
-go run ./cmd/rasputin prepare        # writes out/vanilla-custom.img
-
-diskutil list                        # find the card, e.g. /dev/disk4
-diskutil unmountDisk /dev/disk4
-sudo dd if=out/vanilla-custom.img of=/dev/rdisk4 bs=4m status=progress
-sync
-diskutil eject /dev/disk4
+go run ./cmd/rasputin prepare          # writes out/vanilla-custom.img.zst
+go build -o out/rasputin ./cmd/rasputin
+sudo out/rasputin write-card -image vanilla
 ```
 
-Use `/dev/rdiskN` (raw), not `/dev/diskN` — it is roughly an order of
-magnitude faster. Boot the Pi; `firstrun.sh` creates the user, grows the root
-filesystem, and installs the identity service. From then on the node answers
-`adopt`, `bake` and `flash` over the network.
+`write-card` lists the removable disks, asks which one, unmounts it, writes
+the image through the raw device and ejects it. It is built first because
+writing a disk needs `sudo`, and `sudo go run` would compile as root. Boot the Pi; `firstrun.sh`
+creates the user, grows the root filesystem to `image.rootfs_size_gb`, and
+installs the identity service. From then on the node answers `adopt`, `bake`
+and `flash` over the network. (A card written from the *golden* image instead
+adds its writable layer on first boot and reboots once into the overlay, and
+is a finished node without an `adopt`.)
 
 ## Day 2: changing the fleet
 
@@ -448,8 +513,9 @@ go run ./cmd/rasputin bake     # wipes and rebuilds the builder
 go run ./cmd/rasputin flash all
 ```
 
-The `rm` matters: the raw intermediate is ~3 GB, and a bake without a fresh
-`prepare` silently reuses the previous config (see *Configuration*).
+The `rm` matters: the raw intermediate is ~3 GB and nothing reads it, and a
+bake without a fresh `prepare` silently reuses the previous config (see
+*Configuration*).
 
 ## Escape hatch: trigger a flash by hand
 
@@ -541,9 +607,10 @@ you do not own.
 ```
 cmd/rasputin      the CLI; MANUAL.md is the embedded manual, json.go the JSON views
 cmd/agent         the recovery agent — becomes /init inside recovery.gz
-internal/agent    boot, flag selection, switch_root, reflash/dryrun/capture
+internal/agent    boot, flag selection, overlay root, reflash/dryrun/capture/reset
 internal/bootfs   FAT32 boot-partition editing and config.txt/cmdline.txt patches
-internal/cluster  orchestration: adopt, dryrun, bake, flash, status
+internal/card     SD card discovery and writing, for the cards the network cannot reach
+internal/cluster  orchestration: adopt, dryrun, bake, flash, reset, status
 internal/cpio     newc writer and reader
 internal/events   the progress contract between orchestration and any UI
 internal/initramfs  cross-compiles the agent and packs it
@@ -552,7 +619,7 @@ internal/prepare  the prepare pipeline
 internal/provision  firstrun/identity/provision/seal templates
 internal/server   HTTP server: image serving, capture receipt, progress
 internal/sshx     SSH client with user fallback and host-key pinning
-internal/tui      the `sync` terminal UI (the only package that draws)
+internal/tui      the `sync` display and the card picker (the only package that draws)
 internal/up       planning and execution for `sync`: what is stale, in what order
 internal/vanilla  stock image download, xz decode, cache
 ```

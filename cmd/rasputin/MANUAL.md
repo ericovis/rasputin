@@ -30,6 +30,21 @@ Nodes are addressed by their config `name`, or `all`. The MAC in the config is
 the identity that matters: every connection verifies
 `/sys/class/net/eth0/address` and refuses to act on a mismatch.
 
+**The card has three partitions**: a FAT boot partition, the golden root
+filesystem (`image.rootfs_size_gb`), and a writable layer filling the rest.
+The root filesystem is mounted read-only and never changes after a flash;
+everything the running system writes goes to the writable layer, which the
+recovery agent stacks on top of it as an overlay at every boot. That is what
+**`reset`** is: empty the writable layer, reboot, and the node is the golden
+image again — one reboot instead of the six minutes and the whole-card write
+of a flash. The node's SSH host keys and machine-id are the
+one thing carried over: the golden image has none (`bake` strips them so no
+two clones share a fingerprint), so they are the node's own, and a reset that
+threw them away would leave every pinned key and every `known_hosts` entry
+refusing the node. `status` reports `overlay` per node; a node
+flashed from a golden image built before this existed has no writable layer,
+and `reset` refuses it until it is flashed once more.
+
 ## 2. What is safe, what is destructive
 
 | command | touches | destructive? | typical time |
@@ -44,7 +59,9 @@ the identity that matters: every connection verifies
 | `dryrun` | reboots the node into the recovery agent and back, never writes its card | no | ~2 min per node |
 | `adopt` | edits the boot partition, reboots once | low: reversible, keeps the OS | ~45 s per node |
 | `bake` | **wipes the builder node** | **yes** | ~16 min |
+| `reset` | **wipes every target node's writable layer**, keeping the golden image and the host keys | **yes**, but only of what was written since the last reset | ~1 min per node, parallel |
 | `flash` | **wipes every target node** not already on the golden build | **yes** | ~6 min per node, parallel |
+| `write-card` | **erases a disk in this machine's own card reader** | **yes**, on the machine you are sitting at | ~4 min per card |
 | `sync` | any of the above, as needed | **yes when it bakes or flashes** | 5 s (no-op) to ~25 min |
 
 Rules a program driving this tool must follow:
@@ -53,6 +70,13 @@ Rules a program driving this tool must follow:
   whose plan lists wipes destroy SD cards. Show the owner the plan
   (`sync -plan -json` gives it as data) and get an explicit yes before running
   `sync -yes`, `bake` or `flash`.
+- `reset` is cheap but not harmless: it destroys everything written on a node
+  since it was flashed or last reset. It asks too, and `-json` requires
+  `-yes`.
+- `write-card` is the only command that erases something on *this* machine,
+  and it erases whatever disk it is pointed at. Never pass `-device` a path
+  the owner did not give you; without it the command shows the removable
+  disks it found and asks, and with `-json` it refuses to choose at all.
 - `sync` **asks before wiping** and, without a terminal or with `-json`, it
   refuses instead of guessing. `-yes` is the only way to run it unattended.
 - Read-only questions are `status` and `sync -plan`. Use those first.
@@ -131,6 +155,18 @@ rasputin sync -plan            # prepare+bake+flash all, or less
 rasputin sync -yes
 ```
 
+**Put the cluster back to the golden image** (the loop to run between
+experiments):
+
+```sh
+rasputin reset all             # seconds per node, no image, no card rewrite
+rasputin sync -reset -yes      # the same, plus anything else that is stale
+```
+
+Everything written on the nodes since the last reset is gone; the hostnames,
+the host keys and the golden build are not. A node that answers
+`no writable layer` needs one flash first.
+
 **Check on the cluster** (read-only): `rasputin status -json`.
 
 **Recover one broken node**: `rasputin flash <node>` if it still boots and
@@ -138,6 +174,20 @@ answers SSH. If it does not, start `rasputin serve` and follow the
 escape-hatch and troubleshooting sections of the README: the node's
 recovery agent retries the download forever and never opens the card until
 the image is reachable.
+
+**Give a node a new card** (its old one died, or this is its first one):
+
+```sh
+rasputin write-card                       # pick the reader from the list
+rasputin write-card -image vanilla        # a card for a node that is not adopted yet
+```
+
+Put the card in this machine's reader and run it. The golden image makes a
+finished node: it boots, takes its hostname and its build id from
+`nodes.conf` by MAC, builds its writable layer and reboots once into it, and
+`rasputin status` sees it. The vanilla image is day 0 — a node that has never
+been adopted — and provisions itself on first boot instead. `sudo` is needed
+to write a disk, and the command says so if it is missing.
 
 **Nodes were reflashed from another machine.** Their SSH host keys are new,
 but this machine still has the old ones pinned, so every command refuses to
@@ -151,6 +201,19 @@ changed key and an impostor look the same.
 
 **Run unattended / from a program**: `rasputin sync -json -yes` after the
 owner has approved the plan from `rasputin sync -plan -json`.
+
+**Validating the overlay on real hardware** (once, after baking a golden image
+that has it):
+
+1. `rasputin sync -yes`, then `rasputin status` — every node must show
+   `overlay: yes`.
+2. On one node: `touch /home/$USER/scratch && sudo systemctl --failed` (the
+   list must be empty) and note `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key`.
+3. `rasputin reset <node>`.
+4. The file is gone, the host-key fingerprint is the same one, and
+   `rasputin status` still shows `overlay: yes` and the same `build_id`.
+5. `df /var/lib/rasputin/layers/upper` on the node shows the writable layer
+   with the rest of the card in it.
 
 ## 5. Commands
 
@@ -200,9 +263,14 @@ ran; a down node is reported in the data, not as a failure.
     OS.
   - `adopted`: boots through the recovery agent.
   - `provisioned`: its first-boot package install has completed.
+  - `overlay`: its root filesystem is the overlay of the golden image and a
+    writable layer, so `reset` works on it. False means either an older
+    golden image, or an agent that could not mount the layer and fell back to
+    booting the golden rootfs directly — the node works, but what it writes
+    now goes into the image itself.
 
-A healthy cluster has every node `reachable`, `adopted`, `provisioned` and
-on the same `build_id` as `out/meta/golden.json`.
+A healthy cluster has every node `reachable`, `adopted`, `provisioned`,
+`overlay` and on the same `build_id` as `out/meta/golden.json`.
 
 ### `forget <node...|all>`
 
@@ -230,7 +298,7 @@ the same decision taken mid-run.
 The idempotent whole-pipeline command. It probes every node (and refuses to
 start if any is unreachable), derives a plan, prints it, asks before wiping,
 runs only the stale steps in order (`probe`, `prepare`, `adopt`, `bake`,
-[`dryrun`], `flash`, `status`), and stops at the first failure.
+[`dryrun`], `flash`, `reset`, `status`), and stops at the first failure.
 
 | flag | effect |
 |---|---|
@@ -241,6 +309,7 @@ runs only the stale steps in order (`probe`, `prepare`, `adopt`, `bake`,
 | `-force-bake` | rebake the golden even when current (**wipes the builder**) |
 | `-force-flash` | flash every node even when already on the golden build |
 | `-rehearse` | insert a `dryrun` of every node before the flash |
+| `-reset` | wipe the writable layer of every node the run is **not** flashing (a flashed node comes back pristine anyway). A node with no writable layer yet is left out of the step, named in its reason. |
 | `-trust-new-keys` | accept and re-pin a changed host key (after a reflash done from another machine). Say this only if you know the node was reflashed. |
 | `-plain` | one line per event instead of the live display |
 | `-json` | plan, events and result as JSON objects (implies `-plain`, never prompts) |
@@ -263,8 +332,9 @@ exits 1 with `aborted; ...` and the nodes are safe.
 
 1. `{"type":"plan", ...}` once, before anything runs:
    - `cluster`, `needs_confirmation` (bool), `estimate_seconds`.
-   - `wipes`: `[{node, step}]`, every node that loses its card. Empty means
-     the run is non-destructive.
+   - `wipes`: `[{node, step}]`, every node that loses its card (`flash`,
+     `bake`) or its writable layer (`reset`). Empty means the run is
+     non-destructive.
    - `steps`: `[{id, title, skip, reason, nodes, wipes, estimate_seconds}]`
      in execution order. `skip` true means it will not run and `reason` says
      why.
@@ -275,7 +345,8 @@ exits 1 with `aborted; ...` and the nodes are safe.
    - `kind`: `started`, `done`, `skipped`, `failed` (one step's lifecycle),
      `log` (a free-form line), `phase` (a sub-stage of a long step),
      `transfer` (byte progress, about once a second per node).
-   - `step`: `probe`, `prepare`, `adopt`, `bake`, `dryrun`, `flash`, `status`.
+   - `step`: `probe`, `prepare`, `adopt`, `bake`, `dryrun`, `flash`, `reset`,
+     `status`.
    - `node`: set when the event is about one node.
    - `message`; for `transfer`: `bytes`, `total` (absent when unknown),
      `rate_bytes_per_second`.
@@ -361,6 +432,61 @@ from `~/.ssh/known_hosts` afterwards. Requires a `bake`.
   `[{node, ok, skipped, build_id, hostname, duration_seconds, error}]`.
 - Exit 1 when any node failed; the others are still reported.
 
+### `write-card [-device <path>] [-image golden|vanilla] [-yes]`
+
+**Erases a disk in this machine's own card reader** and writes an image to it.
+This is the one write that does not go over the network: the first card of a
+node that has never been adopted, and a replacement card for a node whose own
+died. Takes no arguments; the config is not consulted beyond loading it.
+
+- `-device <path>` names the disk (`/dev/disk4`, or `/dev/rdisk4`). A path
+  that is not a device is written as a plain file, which is how an image is
+  exported. Without it, and on a terminal, the command lists the removable
+  disks it can find and asks which one — arrow keys, enter to write, `q` to
+  cancel. Disk discovery is macOS-only (`diskutil`); elsewhere `-device` is
+  the only way.
+- `-image golden` (the default) writes `out/golden.img.zst`: a finished node,
+  which takes its identity from its MAC on first boot. `-image vanilla`
+  writes `out/vanilla-custom.img.zst`, the prepared stock image, which
+  provisions itself on first boot.
+- `-yes` skips the confirmation. In text mode the command prints the image,
+  the disk, and `This ERASES everything on <disk>`, then asks `Proceed?
+  [y/N]`; with `-json`, or without a terminal, it fails with a message naming
+  `-yes`. `-json` also refuses to pick a disk and wants `-device`.
+- The disk is unmounted first and ejected afterwards. Nothing is written
+  until the first sector of the decoded image parses as a partition table,
+  the decoded length must equal what that table accounts for (the check
+  `bake` makes on a capture), and the first sector is read back afterwards,
+  so a write-protected or failing card is reported rather than believed.
+- Progress is one line per second in text mode and `{"type":"event",
+  "kind":"transfer","step":"write-card",...}` objects with `-json`.
+- **Result fields**: `device`, `image` (the path written from), `build_id`
+  (the golden build, when `out/meta/golden.json` says), `bytes`,
+  `duration_seconds`.
+
+### `reset [-yes] <node...|all>`
+
+**Wipes every target node's writable layer**: everything written since it was
+flashed or last reset is gone, and the node comes back as the golden image.
+The card is not rewritten and no image crosses the wire — the flag file says
+`reset`, the recovery agent empties the layer inside the initramfs, and the
+same boot carries on. The node keeps its hostname, its build id, and its SSH
+host keys and machine-id — those are carried across the wipe on purpose — so
+nothing is re-pinned and `known_hosts` is left alone. Everything else written
+since the last reset is gone, including anything under `/home`. Nodes are
+reset in parallel.
+
+A node whose root is not an overlay is refused before anything is written
+(`<node> has no writable layer …: flash it first`): resetting it would reboot
+it, change nothing and report success.
+
+- `-yes` skips the confirmation. In text mode the command lists the nodes and
+  asks `Proceed? [y/N]`; with `-json`, or without a terminal, it fails with a
+  message naming `-yes`.
+- **Result fields**: `reset`, `failed`, `nodes`:
+  `[{node, ok, overlay, duration_seconds, error}]`.
+- Exit 1 when any node failed; the others are still reported.
+
 ### `serve`
 
 Runs the built-in HTTP server alone, offering whichever of
@@ -403,6 +529,22 @@ download.
   Ctrl-c. Safe to re-run `sync`; it resumes where it stopped.
 - `… is missing: run rasputin bake first`, `… run rasputin prepare first`
   Artifact order: `prepare`, then `bake`, then `flash`.
+- `… has no writable layer (its golden predates overlay support): flash it first`
+  `reset` only works on a node whose root is an overlay. Flash it once from a
+  golden image that has the third partition and it can be reset from then on;
+  `status` shows which nodes qualify under `overlay`.
+- `… / is not an overlay any more — the agent could not mount the writable layer`
+  The node booted, but on the golden rootfs alone: the fallback fired. It is
+  reachable and can be looked at over SSH (`dmesg | grep rasputin`), and a
+  flash rebuilds it.
+- `opening /dev/rdisk4: permission denied — run it again with sudo: …`
+  Writing a disk node needs root. Re-run the whole command with `sudo`, as
+  the message spells it out; nothing was written.
+- `no removable disk found: insert the card, or name the disk with -device`
+  `write-card` found no external disk. The reader may be empty or the card
+  not seated; `diskutil list` shows what the system sees.
+- `finding SD card readers is implemented on macOS only: name the disk with -device`
+  The picker is macOS-only. Writing is not: pass `-device`.
 - `sudo needs a password and none was supplied`
   Grant NOPASSWD on the node, or set `ssh.sudo: password`.
 - `ssh.sudo is "password" but there is no terminal to prompt on`

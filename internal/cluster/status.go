@@ -40,7 +40,12 @@ type Status struct {
 	Uptime      string
 	Provisioned bool
 	Adopted     bool
-	Err         error
+	// Overlay says the node's root is the overlay of the golden image and a
+	// writable layer, which is what makes `rasputin reset` possible. A node
+	// running an older golden — or one whose agent could not mount the layer
+	// and fell back to the bare rootfs — reports false.
+	Overlay bool
+	Err     error
 }
 
 // Status probes every node in parallel and never modifies anything.
@@ -86,6 +91,7 @@ func (c *Cluster) statusOf(ctx context.Context, node config.Node) Status {
 		"test -f "+ProvisionedMarker+" && echo yes || echo no")) == "yes"
 	s.Adopted = strings.Contains(
 		mustOutput(conn, "cat "+ConfigPath+" 2>/dev/null || true"), "initramfs recovery.gz")
+	s.Overlay = hasOverlayRoot(conn)
 	return s
 }
 
@@ -109,7 +115,7 @@ func buildIDFrom(release string) string {
 
 // StatusTable renders statuses as an aligned table.
 func StatusTable(rows []Status) string {
-	header := []string{"NODE", "MAC", "ADDRESS", "SSH", "HOSTNAME", "BUILD", "PROV", "UPTIME"}
+	header := []string{"NODE", "MAC", "ADDRESS", "SSH", "HOSTNAME", "BUILD", "PROV", "OVERLAY", "UPTIME"}
 	cells := [][]string{header}
 	for _, r := range rows {
 		cells = append(cells, []string{
@@ -120,6 +126,7 @@ func StatusTable(rows []Status) string {
 			dash(r.Hostname),
 			buildCell(r),
 			boolCell(r.Reachable, r.Provisioned),
+			boolCell(r.Reachable, r.Overlay),
 			dash(shorten(r.Uptime, 28)),
 		})
 	}

@@ -35,6 +35,7 @@ const (
 	DryrunEstimate      = 2 * time.Minute // per node, sequential
 	FlashOneEstimate    = 6 * time.Minute
 	FlashManyEstimate   = 7 * time.Minute // parallel; the wire is the limit
+	ResetEstimate       = 2 * time.Minute // parallel; one boot, no transfer
 	StatusEstimate      = 2 * time.Second
 )
 
@@ -46,6 +47,9 @@ type Options struct {
 	ForceFlash   bool
 	// Rehearse inserts a dryrun before the flash step.
 	Rehearse bool
+	// Reset wipes the writable layer of every node the run is not already
+	// replacing, so the cluster ends up exactly on the golden image.
+	Reset bool
 	// TrustNewKeys re-pins a node whose host key changed instead of
 	// refusing it.
 	TrustNewKeys bool
@@ -79,6 +83,9 @@ type Deps struct {
 	Dryrun func(ctx context.Context, img cluster.Image, node config.Node) cluster.DryrunResult
 	// Flash clones the golden image onto nodes, in parallel. Required.
 	Flash func(ctx context.Context, img cluster.Image, meta *cluster.GoldenMeta, targets []config.Node, opts cluster.FlashOptions) ([]cluster.FlashResult, error)
+	// Reset wipes nodes' writable layers, in parallel. Required with
+	// Options.Reset.
+	Reset func(ctx context.Context, targets []config.Node) []cluster.ResetResult
 
 	// ReadPrepareMeta and ReadGoldenMeta report what the last prepare and
 	// the last bake produced. Both return an error when nothing is recorded.
@@ -128,6 +135,9 @@ func NewDeps(c *cluster.Cluster, srv *server.Server) Deps {
 			}
 			return c.Flash(ctx, srv, img, meta, targets, opts), nil
 		},
+		Reset: func(ctx context.Context, targets []config.Node) []cluster.ResetResult {
+			return c.Reset(ctx, targets)
+		},
 		ReadPrepareMeta: prepare.ReadMeta,
 		ReadGoldenMeta:  cluster.ReadGoldenMeta,
 		FileExists:      FileExists,
@@ -175,6 +185,7 @@ func (d Deps) check(opts Options) error {
 		{"FileExists", d.FileExists == nil},
 		{"Fingerprint", d.Fingerprint == nil},
 		{"Dryrun", opts.Rehearse && d.Dryrun == nil},
+		{"Reset", opts.Reset && d.Reset == nil},
 	}
 	for _, r := range required {
 		if r.nil {

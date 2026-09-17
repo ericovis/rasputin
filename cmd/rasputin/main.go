@@ -41,6 +41,8 @@ func init() {
 		{"dryrun", "dryrun [flags] <node|all>", "validate the download+decode pipeline on a node, harmlessly", withConfig, runDryrun},
 		{"bake", "bake [flags]", "produce out/golden.img.zst using the builder node", withConfig, runBake},
 		{"flash", "flash [flags] <node...|all>", "reflash node(s) from the golden image", withConfig, runFlash},
+		{"write-card", "write-card [flags]", "write the golden (or vanilla) image to an SD card in this machine", withConfig, runWriteCard},
+		{"reset", "reset [flags] <node...|all>", "wipe a node's writable layer back to the golden image (seconds, no reflash)", withConfig, runReset},
 		{"status", "status [flags] [node...]", "table of node, ip, reachable, hostname, build-id, uptime", withConfig, runStatus},
 		{"forget", "forget [flags] <node...|all>", "drop a node's pinned SSH host key (after a reflash done elsewhere)", withConfig, runForget},
 		{"serve", "serve [flags]", "run the HTTP server standalone (debugging)", withConfig, runServe},

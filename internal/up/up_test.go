@@ -70,6 +70,8 @@ type fake struct {
 
 	prepared    []prepare.Options
 	adopted     []string
+	reset       []string
+	resetErrors map[string]bool
 	bakes       int
 	rehearsed   []string
 	flashed     []string
@@ -95,7 +97,7 @@ func newFake(t *testing.T) *fake {
 	for _, n := range cfg.Nodes {
 		f.status = append(f.status, cluster.Status{
 			Name: n.Name, MAC: n.MAC, IP: "192.168.0.1" + n.Name[len(n.Name)-1:],
-			Reachable: true, Adopted: true, Provisioned: true,
+			Reachable: true, Adopted: true, Provisioned: true, Overlay: true,
 			Hostname: n.Name, BuildID: "build-1",
 		})
 	}
@@ -185,6 +187,18 @@ func (f *fake) deps() Deps {
 				out = append(out, res)
 			}
 			return out, nil
+		},
+		Reset: func(_ context.Context, targets []config.Node) []cluster.ResetResult {
+			var out []cluster.ResetResult
+			for _, n := range targets {
+				f.reset = append(f.reset, n.Name)
+				res := cluster.ResetResult{Node: n.Name, Overlay: true}
+				if f.resetErrors[n.Name] {
+					res.Err = fmt.Errorf("%s has no writable layer", n.Name)
+				}
+				out = append(out, res)
+			}
+			return out
 		},
 		ReadPrepareMeta: func() (*prepare.Meta, error) {
 			if f.prep == nil {

@@ -25,6 +25,9 @@ type Disk interface {
 type System interface {
 	// WithBoot mounts the boot partition read-write and runs fn on it.
 	WithBoot(fn func(dir string) error) error
+	// WithUpper mounts the writable layer read-write and runs fn on it. It
+	// is only called once HasUpper has reported there is one.
+	WithUpper(fn func(dir string) error) error
 	// Reboot restarts the machine and does not return on success.
 	Reboot() error
 }
@@ -132,11 +135,39 @@ func Capture(ctx context.Context, c *Client, disk Disk) error {
 	}
 }
 
-// RunMode dispatches one of the network modes and performs the cleanup each
-// one owes the next boot: clearing its flag file, leaving a report, and
-// rebooting.
+// Reset empties the writable layer, putting the node back on the golden
+// image with everything written since the last reset gone.
+//
+// It runs in the initramfs, before the layer is part of anything, which is
+// what makes it safe and quick: no service has opened a file in it and there
+// is nothing to unwind. The flag is cleared last, so a reset interrupted by
+// a power cut simply happens again on the next boot.
+func Reset(c *Client, sys System) error {
+	if HasUpper() {
+		if err := sys.WithUpper(WipeUpper); err != nil {
+			return fmt.Errorf("emptying the writable layer: %w", err)
+		}
+		c.logf("reset: the writable layer is empty; this boot continues into the golden image")
+	} else {
+		// A golden image older than the overlay has no writable layer, and
+		// there is nothing to put back: the whole card is already the image.
+		c.logf("reset: no writable layer at %s; nothing to reset", UpperPart)
+	}
+	if err := sys.WithBoot(func(dir string) error { return removeFlag(dir, FlagReset) }); err != nil {
+		return fmt.Errorf("clearing the reset flag: %w", err)
+	}
+	return nil
+}
+
+// RunMode dispatches one mode and performs the cleanup it owes the next
+// boot: clearing its flag file, leaving a report, and rebooting. ModeReset is
+// the exception that returns instead — its work is done before the system
+// starts, so the same boot carries on into it.
 func RunMode(ctx context.Context, mode Mode, c *Client, disk Disk, sys System) error {
 	switch mode {
+	case ModeReset:
+		return Reset(c, sys)
+
 	case ModeReflash:
 		if err := Reflash(ctx, c, disk); err != nil {
 			return err
@@ -177,7 +208,7 @@ func RunMode(ctx context.Context, mode Mode, c *Client, disk Disk, sys System) e
 		c.logf("capture complete, rebooting into the normal system")
 		return sys.Reboot()
 	}
-	return fmt.Errorf("agent: mode %s is not a network mode", mode)
+	return fmt.Errorf("agent: mode %s has no runner", mode)
 }
 
 // writeReportAndClearFlag drops the dryrun report next to the flag file and

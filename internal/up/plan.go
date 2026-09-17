@@ -53,6 +53,8 @@ type Plan struct {
 	adoptTargets []config.Node
 	flashTargets []config.Node
 	flashSkipped []string
+	resetTargets []config.Node
+	resetSkipped []string
 	// prepareMeta and goldenMeta are what was on disk at planning time;
 	// either may be nil.
 	prepareMeta *prepare.Meta
@@ -145,7 +147,8 @@ func NewPlan(ctx context.Context, deps Deps, opts Options) (*Plan, error) {
 	if opts.Rehearse {
 		p.Steps = append(p.Steps, p.planDryrun(deps, !bakeStep.Skip))
 	}
-	p.Steps = append(p.Steps, p.planFlash(!bakeStep.Skip), Step{
+	flashStep := p.planFlash(!bakeStep.Skip)
+	p.Steps = append(p.Steps, flashStep, p.planReset(flashStep), Step{
 		ID:       events.StepStatus,
 		Title:    "read the health table back",
 		Nodes:    names(targets),
@@ -316,6 +319,62 @@ func (p *Plan) planFlash(bakeWillRun bool) Step {
 	step.Reason = plural(len(p.flashTargets), "node") + " to clone"
 	if len(p.flashSkipped) > 0 {
 		step.Reason += fmt.Sprintf(" (%s already current)", strings.Join(p.flashSkipped, " "))
+	}
+	return step
+}
+
+// planReset wipes the writable layer of every node this run is not already
+// replacing. A node about to be cloned needs no reset — it comes back as the
+// golden image by definition — and resetting it would only cost a boot.
+//
+// A node whose root is not an overlay is dropped here rather than left to
+// fail: cluster.Reset refuses it, one refusal fails the step, and a failed
+// step stops the run — so a single node still on a pre-overlay golden would
+// abort the whole sync after the others had already been wiped. The probe
+// already knows which nodes those are, and the plan is where this repo
+// decides what not to do.
+func (p *Plan) planReset(flash Step) Step {
+	step := Step{
+		ID:       events.StepReset,
+		Title:    "wipe the writable layer back to the golden image",
+		Estimate: ResetEstimate,
+	}
+	if !p.opts.Reset {
+		step.Skip = true
+		step.Reason = "not requested"
+		return step
+	}
+	flashing := map[string]bool{}
+	if !flash.Skip {
+		for _, n := range flash.Nodes {
+			flashing[n] = true
+		}
+	}
+	for _, node := range p.targets {
+		switch {
+		case flashing[node.Name]:
+		case !p.probeOf(node).Overlay:
+			p.resetSkipped = append(p.resetSkipped, node.Name)
+		default:
+			p.resetTargets = append(p.resetTargets, node)
+		}
+	}
+	if len(p.resetTargets) == 0 {
+		step.Skip = true
+		step.Reason = "no nodes to reset"
+		if len(p.resetSkipped) > 0 {
+			step.Reason = fmt.Sprintf("no node has a writable layer yet (%s); flash them once",
+				strings.Join(p.resetSkipped, " "))
+		}
+		return step
+	}
+	step.Nodes = names(p.resetTargets)
+	// A reset destroys everything written since the last one, so it belongs
+	// in the same confirmation as a flash: less to lose, but still a loss.
+	step.Wipes = step.Nodes
+	step.Reason = plural(len(p.resetTargets), "node") + " to reset"
+	if len(p.resetSkipped) > 0 {
+		step.Reason += fmt.Sprintf(" (%s: no writable layer yet)", strings.Join(p.resetSkipped, " "))
 	}
 	return step
 }

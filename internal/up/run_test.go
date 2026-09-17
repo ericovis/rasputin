@@ -53,7 +53,7 @@ func TestRunNothingToDo(t *testing.T) {
 		t.Errorf("a no-op run did work: prepared=%d bakes=%d flashed=%v adopted=%v",
 			len(f.prepared), f.bakes, f.flashed, f.adopted)
 	}
-	const want = "started:probe done:probe skipped:prepare skipped:adopt skipped:bake skipped:flash started:status done:status"
+	const want = "started:probe done:probe skipped:prepare skipped:adopt skipped:bake skipped:flash skipped:reset started:status done:status"
 	if got := trace(rec); got != want {
 		t.Errorf("events =\n%s\nwant\n%s", got, want)
 	}
@@ -179,7 +179,7 @@ func TestRunRebuildsEverything(t *testing.T) {
 	if f.flashOpts.Force {
 		t.Error("flash was forced without -force-flash")
 	}
-	const wantTrace = "started:probe done:probe started:prepare done:prepare skipped:adopt started:bake done:bake started:flash done:flash started:status done:status"
+	const wantTrace = "started:probe done:probe started:prepare done:prepare skipped:adopt started:bake done:bake started:flash done:flash skipped:reset started:status done:status"
 	if got := trace(rec); got != wantTrace {
 		t.Errorf("events =\n%s\nwant\n%s", got, wantTrace)
 	}
@@ -267,7 +267,7 @@ func TestRunStopsAtTheFirstFailure(t *testing.T) {
 	if !flash.Skipped || flash.Reason != "a previous step failed" {
 		t.Errorf("flash result = %+v, want skipped because the bake failed", flash)
 	}
-	const want = "started:probe done:probe started:prepare done:prepare skipped:adopt started:bake failed:bake skipped:flash skipped:status"
+	const want = "started:probe done:probe started:prepare done:prepare skipped:adopt started:bake failed:bake skipped:flash skipped:reset skipped:status"
 	if got := trace(rec); got != want {
 		t.Errorf("events =\n%s\nwant\n%s", got, want)
 	}
@@ -506,5 +506,46 @@ func TestWatchTransfersPollsWhileAStepRuns(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if after := len(rec.Events()); after != before {
 		t.Errorf("%d more events arrived after Run returned; the poller outlived its step", after-before)
+	}
+}
+
+// TestRunResetsTheNodesItPlanned: the run resets exactly the nodes the plan
+// showed the operator, and nothing is flashed to do it.
+func TestRunResetsTheNodesItPlanned(t *testing.T) {
+	f := newFake(t)
+	res, rec, err := f.run(t, Options{Reset: true})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	want := []string{"rasputin001", "rasputin002", "rasputin003", "rasputin004"}
+	if strings.Join(f.reset, " ") != strings.Join(want, " ") {
+		t.Errorf("reset %v, want %v", f.reset, want)
+	}
+	if len(f.flashed) != 0 {
+		t.Errorf("a reset flashed %v; it must never write a card", f.flashed)
+	}
+	if !strings.Contains(trace(rec), "started:reset done:reset") {
+		t.Errorf("events = %q, want the reset step to run", trace(rec))
+	}
+	if s := res.Step(events.StepReset); s.Err != nil || s.Note != "reset 4 nodes" {
+		t.Errorf("reset result = %+v", s)
+	}
+}
+
+// TestRunReportsAFailedReset: a node whose golden predates the overlay cannot
+// be reset, and the run has to say which one and stop.
+func TestRunReportsAFailedReset(t *testing.T) {
+	f := newFake(t)
+	f.resetErrors = map[string]bool{"rasputin003": true}
+
+	res, _, err := f.run(t, Options{Reset: true})
+	if err == nil {
+		t.Fatal("Run reported success although a node could not be reset")
+	}
+	if !strings.Contains(err.Error(), "rasputin003") {
+		t.Errorf("error = %v, want it to name the node", err)
+	}
+	if s := res.Step(events.StepStatus); !s.Skipped {
+		t.Error("the status step ran after a failed reset")
 	}
 }

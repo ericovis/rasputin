@@ -74,7 +74,13 @@ func run(log *kmsg.Logger) {
 	log.Printf("mode=%s mac=%s url=%s", mode, agent.MAC(), url)
 
 	switch mode {
-	case agent.ModeNormal:
+	case agent.ModeNormal, agent.ModeReset:
+		// A reset is not a network mode and does not end in a reboot: the
+		// writable layer is emptied here, and this same boot then hands over
+		// to a system that is the golden image again.
+		if mode == agent.ModeReset {
+			resetLayer(log)
+		}
 		if err := agent.SwitchRoot(log); err != nil {
 			// Deliberately not a reboot: a reboot loop would hide the cause
 			// and hammer the card. Hold and let the operator look.
@@ -86,6 +92,16 @@ func run(log *kmsg.Logger) {
 			"the SD card has NOT been touched")
 	default:
 		runNetworkMode(log, mode, url)
+	}
+}
+
+// resetLayer empties the writable layer before the root is assembled. A
+// failure is logged and the boot continues: an un-reset node is still a
+// reachable node, and `rasputin reset` can be run again.
+func resetLayer(log *kmsg.Logger) {
+	client := &agent.Client{MAC: agent.MAC(), Log: log}
+	if err := agent.RunMode(context.Background(), agent.ModeReset, client, nil, agent.Sys()); err != nil {
+		log.Printf("WARNING: the reset did not finish: %v", err)
 	}
 }
 
