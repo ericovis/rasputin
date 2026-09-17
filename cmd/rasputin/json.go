@@ -74,6 +74,13 @@ func toStatusJSON(rows []cluster.Status) []statusJSON {
 	return out
 }
 
+// forgetNodeJSON is one node's pinned-key outcome. forgotten is false when
+// there was nothing pinned, which is still a success.
+type forgetNodeJSON struct {
+	Node      string `json:"node"`
+	Forgotten bool   `json:"forgotten"`
+}
+
 // imageJSON is an image the built-in HTTP server is offering.
 type imageJSON struct {
 	Name string `json:"name"`

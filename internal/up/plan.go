@@ -2,6 +2,7 @@ package up
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/ericovis/rasputin/internal/config"
 	"github.com/ericovis/rasputin/internal/events"
 	"github.com/ericovis/rasputin/internal/prepare"
+	"github.com/ericovis/rasputin/internal/sshx"
 	"github.com/ericovis/rasputin/internal/vanilla"
 )
 
@@ -76,15 +78,16 @@ func NewPlan(ctx context.Context, deps Deps, opts Options) (*Plan, error) {
 
 	status := deps.Status(ctx, targets)
 	var down []string
+	var hostKeyChanged bool
 	for _, s := range status {
 		if !s.Reachable {
 			down = append(down, fmt.Sprintf("%s (%v)", s.Name, s.Err))
+			hostKeyChanged = hostKeyChanged || errors.Is(s.Err, sshx.ErrHostKeyChanged)
 		}
 	}
 	if len(down) > 0 {
-		return nil, fmt.Errorf("%d of %d node(s) do not answer: %s\n"+
-			"nothing has been touched. Power them up, or drop them from %s, then run `rasputin sync` again",
-			len(down), len(status), strings.Join(down, "; "), cfg.Path)
+		return nil, fmt.Errorf("%d of %d node(s) do not answer: %s\n%s",
+			len(down), len(status), strings.Join(down, "; "), downHint(hostKeyChanged, cfg.Path))
 	}
 
 	p := &Plan{
@@ -149,6 +152,21 @@ func NewPlan(ctx context.Context, deps Deps, opts Options) (*Plan, error) {
 		Estimate: StatusEstimate,
 	})
 	return p, nil
+}
+
+// downHint is the second line of the probe refusal: what to actually do. A
+// node whose pinned host key changed is not down at all — it answers, and
+// telling the operator to power it up would send them to the wrong end of
+// the room.
+func downHint(hostKeyChanged bool, cfgPath string) string {
+	if hostKeyChanged {
+		return fmt.Sprintf("nothing has been touched. A node's SSH host key changed: if it was reflashed "+
+			"from another machine, run `rasputin forget <node>` (or `forget all`) or re-run with "+
+			"`rasputin sync -trust-new-keys`; if it was not, investigate before trusting it. Nodes that "+
+			"are really down must be powered up, or dropped from %s", cfgPath)
+	}
+	return fmt.Sprintf("nothing has been touched. Power them up, or drop them from %s, "+
+		"then run `rasputin sync` again", cfgPath)
 }
 
 // planPrepare decides whether the artifacts in out/ still match the config.

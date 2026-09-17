@@ -9,6 +9,7 @@ package nodes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -193,11 +194,13 @@ func (r *Resolver) Connect(ctx context.Context, node config.Node) (Conn, error) 
 		perDial = DefaultDialTimeout
 	}
 	var problems []string
+	var hostKeyChanged bool
 	for _, c := range candidates {
 		dialCtx, cancel := context.WithTimeout(ctx, perDial)
 		conn, err := r.Dial.Dial(dialCtx, node.Name, c.Host)
 		cancel()
 		if err != nil {
+			hostKeyChanged = hostKeyChanged || errors.Is(err, sshx.ErrHostKeyChanged)
 			problems = append(problems, fmt.Sprintf("%s (%s): %v", c.Host, c.Source, err))
 			continue
 		}
@@ -223,7 +226,13 @@ func (r *Resolver) Connect(ctx context.Context, node config.Node) (Conn, error) 
 		r.logf("%s: connected to %s (%s) as %s", node.Name, c.Host, c.Source, conn.User())
 		return conn, nil
 	}
-	return nil, fmt.Errorf("%s is unreachable:\n  %s", node.Name, strings.Join(problems, "\n  "))
+	// Every attempt is reported as text, so a stale pinned key would read as
+	// just another way of being down; keep the cause reachable behind it.
+	err := fmt.Errorf("%s is unreachable:\n  %s", node.Name, strings.Join(problems, "\n  "))
+	if hostKeyChanged {
+		return nil, sshx.WrapHostKeyChanged(err)
+	}
+	return nil, err
 }
 
 // Reachable reports whether a node answers, closing the connection again.

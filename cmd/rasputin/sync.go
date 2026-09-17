@@ -40,12 +40,13 @@ func runSync(cfg *config.Config, out *output, args []string) error {
 	// One indirection for every logger. c.Serve copies c.Log into the HTTP
 	// server at Serve time, so repointing c.Log alone would leave the
 	// server printing "served golden.img.zst to …" straight through the
-	// TUI. Everything goes through sw, and the run repoints sw.
-	sw := &logSwitch{}
-	c, err := cluster.NewWithSudo(cfg, pw, sw.logf)
+	// TUI. Everything goes through logs, and the run repoints them.
+	logs := newSyncLogging(out)
+	c, err := cluster.NewWithSudo(cfg, pw, logs.quiet.logf)
 	if err != nil {
 		return err
 	}
+	c.Dialer.TrustNewKeys = opts.TrustNewKeys
 	// Planning is read-only and needs no HTTP server; -plan must work while
 	// another rasputin holds the port (a sync in progress, say).
 	var srv *server.Server
@@ -57,13 +58,7 @@ func runSync(cfg *config.Config, out *output, args []string) error {
 	}
 
 	deps := up.NewDeps(c, srv)
-	setLog := deps.SetLog
-	deps.SetLog = func(logf func(format string, args ...any)) {
-		if setLog != nil {
-			setLog(logf)
-		}
-		sw.set(logf)
-	}
+	logs.attach(c, &deps)
 
 	// Ctrl-C outside the TUI must unwind the same way it does inside it:
 	// cancel the run, let the step return, leave the node in the agent.
@@ -92,6 +87,7 @@ func parseSyncFlags(cfg *config.Config, out *output, args []string) (up.Options,
 	forceBake := fs.Bool("force-bake", false, "bake a new golden image even if the current one matches the prepared image")
 	forceFlash := fs.Bool("force-flash", false, "reflash every node, including one already on the golden build")
 	rehearse := fs.Bool("rehearse", false, "dryrun every node before flashing, to prove the pipeline without writing a card")
+	trustNewKeys := fs.Bool("trust-new-keys", false, "accept and re-pin a changed SSH host key (after a reflash done from another machine)")
 	yes := fs.Bool("yes", false, "do not ask before wiping a node")
 	plain := fs.Bool("plain", false, "print one line per event instead of drawing the progress display")
 	planOnly := fs.Bool("plan", false, "probe, print the plan, and stop without touching anything")
@@ -120,6 +116,7 @@ func parseSyncFlags(cfg *config.Config, out *output, args []string) (up.Options,
 		ForceBake:    *force || *forceBake,
 		ForceFlash:   *force || *forceFlash,
 		Rehearse:     *rehearse,
+		TrustNewKeys: *trustNewKeys,
 		Yes:          *yes,
 		LogPath:      *logPath,
 	}, syncFlags{Plain: *plain, PlanOnly: *planOnly}, nil
@@ -292,6 +289,35 @@ func firstLine(msg string) string {
 	return msg
 }
 
+// syncLogging routes the loggers of a sync run. The cluster's own logger
+// stays quiet until the run starts, so the probe does not scribble over the
+// plan summary. The dialer cannot share that: its one line — the
+// -trust-new-keys re-pin — is written during that probe, and it is the only
+// record that a pinned host key was silently replaced, so it goes to the
+// command's own output until there is a run to take it.
+type syncLogging struct {
+	quiet *logSwitch
+	dial  *logSwitch
+}
+
+func newSyncLogging(out *output) *syncLogging {
+	return &syncLogging{quiet: &logSwitch{}, dial: &logSwitch{to: out.logf}}
+}
+
+// attach hands the dialer its logger and makes the run repoint both
+// switches when it takes over the display.
+func (s *syncLogging) attach(c *cluster.Cluster, deps *up.Deps) {
+	c.Dialer.Log = s.dial.logf
+	setLog := deps.SetLog
+	deps.SetLog = func(logf func(format string, args ...any)) {
+		if setLog != nil {
+			setLog(logf)
+		}
+		s.quiet.set(logf)
+		s.dial.set(logf)
+	}
+}
+
 // logSwitch is a logger that can be repointed while the things holding it
 // keep the same function value.
 type logSwitch struct {
@@ -299,9 +325,9 @@ type logSwitch struct {
 	to func(format string, args ...any)
 }
 
-// logf is the function every logger in the run is built from. Until set is
-// called it is silent, which keeps the planning probe from scribbling over
-// the plan summary.
+// logf is the function every logger in the run is built from. It writes
+// wherever the switch currently points, and a switch built with nowhere to
+// point is silent until set is called.
 func (l *logSwitch) logf(format string, args ...any) {
 	l.mu.Lock()
 	to := l.to

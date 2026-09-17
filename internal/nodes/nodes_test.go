@@ -2,6 +2,7 @@ package nodes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -241,6 +242,30 @@ func TestConnectReportsEveryAttempt(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "rasputin003.local") || !strings.Contains(err.Error(), "connection refused") {
 		t.Errorf("err = %v, want each attempt listed", err)
+	}
+}
+
+// TestConnectKeepsAChangedHostKeyFindable: Connect reports every candidate
+// as one string, and `sync` reads that error to tell an operator whose pins
+// are stale from one whose node is off.
+func TestConnectKeepsAChangedHostKeyFindable(t *testing.T) {
+	r := newResolver(t, &fakeDialer{failAll: sshx.WrapHostKeyChanged(fmt.Errorf("host key for rasputin002 changed"))})
+	_, err := r.Connect(context.Background(), *r.Cfg.Node("rasputin002"))
+	if err == nil {
+		t.Fatal("Connect succeeded although every candidate refused the host key")
+	}
+	if !errors.Is(err, sshx.ErrHostKeyChanged) {
+		t.Errorf("err = %v, want it to unwrap to sshx.ErrHostKeyChanged", err)
+	}
+	if !strings.Contains(err.Error(), "rasputin002.local") {
+		t.Errorf("err = %v, want each attempt still listed", err)
+	}
+
+	// An ordinary failure must not claim a host key changed.
+	plain := newResolver(t, &fakeDialer{failAll: fmt.Errorf("connection refused")})
+	_, err = plain.Connect(context.Background(), *plain.Cfg.Node("rasputin002"))
+	if errors.Is(err, sshx.ErrHostKeyChanged) {
+		t.Errorf("err = %v, want a plain unreachable node", err)
 	}
 }
 

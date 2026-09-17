@@ -42,6 +42,7 @@ func init() {
 		{"bake", "bake [flags]", "produce out/golden.img.zst using the builder node", withConfig, runBake},
 		{"flash", "flash [flags] <node...|all>", "reflash node(s) from the golden image", withConfig, runFlash},
 		{"status", "status [flags] [node...]", "table of node, ip, reachable, hostname, build-id, uptime", withConfig, runStatus},
+		{"forget", "forget [flags] <node...|all>", "drop a node's pinned SSH host key (after a reflash done elsewhere)", withConfig, runForget},
 		{"serve", "serve [flags]", "run the HTTP server standalone (debugging)", withConfig, runServe},
 		{"manual", "manual [flags]", "print the operator's manual (what every command does, and its JSON)", withoutConfig, runManual},
 	}

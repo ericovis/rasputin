@@ -48,7 +48,11 @@ type Cluster struct {
 	Cfg      *config.Config
 	State    *state.Store
 	Resolver *nodes.Resolver
-	Log      func(format string, args ...any)
+	// Dialer is the resolver's SSH dialer, kept reachable so a command can
+	// change how connections are made — `sync -trust-new-keys` is the only
+	// one that does.
+	Dialer *sshx.Dialer
+	Log    func(format string, args ...any)
 }
 
 // New wires up the state cache, the SSH dialer and the node resolver.
@@ -71,10 +75,12 @@ func NewWithSudo(cfg *config.Config, sudoPassword string, logf func(format strin
 		return nil, err
 	}
 	dialer.SudoPassword = sudoPassword
+	dialer.Log = logf
 	return &Cluster{
-		Cfg:   cfg,
-		State: st,
-		Log:   logf,
+		Cfg:    cfg,
+		State:  st,
+		Dialer: dialer,
+		Log:    logf,
 		Resolver: &nodes.Resolver{
 			Cfg:   cfg,
 			State: st,

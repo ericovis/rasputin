@@ -54,6 +54,20 @@ type Dialer struct {
 	// that have not been granted passwordless sudo. Empty means the CLI
 	// requires NOPASSWD, which is the default.
 	SudoPassword string
+	// TrustNewKeys re-pins a node whose host key changed instead of
+	// refusing it. It exists for the one case the pin cannot distinguish
+	// from an impersonation: the nodes were reflashed from another machine,
+	// so this machine's pins are stale by design.
+	TrustNewKeys bool
+	// Log receives the lines this package has to say for itself; nil
+	// discards them.
+	Log func(format string, args ...any)
+}
+
+func (d *Dialer) logf(format string, args ...any) {
+	if d.Log != nil {
+		d.Log(format, args...)
+	}
 }
 
 // New builds a Dialer from the cluster config.
@@ -172,6 +186,7 @@ func (d *Dialer) Dial(ctx context.Context, node, host string) (*Client, error) {
 	addr := net.JoinHostPort(host, fmt.Sprint(port))
 
 	var errs []string
+	var hostKeyChanged bool
 	for _, user := range d.Users {
 		cfg := &ssh.ClientConfig{
 			User:            user,
@@ -187,10 +202,17 @@ func (d *Dialer) Dial(ctx context.Context, node, host string) (*Client, error) {
 		// A host-key problem is the same for every user, and a wrong key is
 		// something an operator must resolve, not something to retry.
 		if isHostKeyError(err) {
+			hostKeyChanged = true
 			break
 		}
 	}
-	return nil, fmt.Errorf("cannot connect to %s: %s", host, strings.Join(errs, "; "))
+	// The per-user failures are joined as text, which would lose the cause;
+	// tag the result so a caller can still branch on it.
+	failed := fmt.Errorf("cannot connect to %s: %s", host, strings.Join(errs, "; "))
+	if hostKeyChanged {
+		return nil, WrapHostKeyChanged(failed)
+	}
+	return nil, failed
 }
 
 // dialContext dials with the context's cancellation respected.
@@ -215,13 +237,24 @@ func dialContext(ctx context.Context, addr string, cfg *ssh.ClientConfig, timeou
 	return ssh.NewClient(c, chans, reqs), nil
 }
 
-// hostKeyError marks a refusal caused by a changed host key.
+// ErrHostKeyChanged is what a refusal over a changed host key unwraps to.
+// The remedy for it — `rasputin forget`, or -trust-new-keys — is nothing
+// like the remedy for a node that is simply down, so callers that turn
+// several failures into one message have to be able to tell them apart.
+var ErrHostKeyChanged = errors.New("host key changed")
+
+// hostKeyError marks a refusal caused by a changed host key. It keeps its
+// own message and names the sentinel as its cause, so errors.Is finds it
+// however many layers of text a caller wraps around it.
 type hostKeyError struct{ error }
 
-func isHostKeyError(err error) bool {
-	var hk hostKeyError
-	return errors.As(err, &hk)
-}
+func (hostKeyError) Unwrap() error { return ErrHostKeyChanged }
+
+// WrapHostKeyChanged tags err as caused by a changed host key without
+// touching its message.
+func WrapHostKeyChanged(err error) error { return hostKeyError{err} }
+
+func isHostKeyError(err error) bool { return errors.Is(err, ErrHostKeyChanged) }
 
 // hostKeyCallback accepts a node's key the first time and pins it after
 // that. Trust on first use is the right trade here: the cluster is on a
@@ -238,9 +271,17 @@ func (d *Dialer) hostKeyCallback(node string) ssh.HostKeyCallback {
 			return d.Keys.SetHostKey(node, presented)
 		}
 		if known != presented {
+			if d.TrustNewKeys {
+				if err := d.Keys.SetHostKey(node, presented); err != nil {
+					return err
+				}
+				d.logf("%s: host key changed, re-pinned (-trust-new-keys)", node)
+				return nil
+			}
 			return hostKeyError{fmt.Errorf(
-				"host key for %s changed (this is expected after a reflash — the CLI clears the "+
-					"recorded key when it flashes; if you did not flash this node, investigate)", node)}
+				"host key for %s changed. If the node was reflashed (from another machine, say) "+
+					"the pin is stale: run `rasputin forget %s`, or re-run sync with -trust-new-keys. "+
+					"If it was not reflashed, investigate before trusting it", node, node)}
 		}
 		return nil
 	}

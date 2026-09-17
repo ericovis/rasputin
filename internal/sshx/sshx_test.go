@@ -2,6 +2,8 @@ package sshx
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,6 +129,81 @@ func TestHostKeyIsRecordedOnFirstUseAndPinnedAfter(t *testing.T) {
 	c3.Close()
 	if st.HostKey("rasputin001") != hostKeyString(other.HostKey) {
 		t.Error("the new host key was not recorded")
+	}
+}
+
+// TestTrustNewKeysRepinsInsteadOfRefusing covers the cluster reflashed from
+// another machine: this machine's pin is stale, and -trust-new-keys moves it
+// to the key the node presents now. The pin must *move*, not go away.
+func TestTrustNewKeysRepinsInsteadOfRefusing(t *testing.T) {
+	srv := newTestSSHD(t, "berry")
+	st, err := state.Load(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := dialerFor(t, srv, []string{"berry"}, st)
+	c, err := d.Dial(context.Background(), "rasputin002", "127.0.0.1")
+	if err != nil {
+		t.Fatalf("first Dial: %v", err)
+	}
+	c.Close()
+
+	other := newTestSSHD(t, "berry")
+	d2 := dialerFor(t, other, []string{"berry"}, st)
+	d2.TrustNewKeys = true
+	var logged []string
+	d2.Log = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+
+	c2, err := d2.Dial(context.Background(), "rasputin002", "127.0.0.1")
+	if err != nil {
+		t.Fatalf("Dial with TrustNewKeys: %v", err)
+	}
+	c2.Close()
+	if got := st.HostKey("rasputin002"); got != hostKeyString(other.HostKey) {
+		t.Errorf("recorded host key = %q, want the new server's", got)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "re-pinned") {
+		t.Errorf("log lines = %v, want one saying the key was re-pinned", logged)
+	}
+
+	// The pin moved to the new key; the old server is now the stranger.
+	if _, err := d.Dial(context.Background(), "rasputin002", "127.0.0.1"); err == nil {
+		t.Error("the original host key was still accepted; -trust-new-keys must move the pin, not disable it")
+	}
+}
+
+// TestChangedHostKeyErrorKeepsItsCause: Dial joins its per-user failures into
+// one string, and the remedy for this one is specific enough that callers
+// branch on it.
+func TestChangedHostKeyErrorKeepsItsCause(t *testing.T) {
+	srv := newTestSSHD(t, "berry")
+	st, _ := state.Load(filepath.Join(t.TempDir(), "state.json"))
+	d := dialerFor(t, srv, []string{"berry"}, st)
+	c, err := d.Dial(context.Background(), "rasputin002", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+
+	other := newTestSSHD(t, "berry")
+	_, err = dialerFor(t, other, []string{"berry"}, st).Dial(context.Background(), "rasputin002", "127.0.0.1")
+	if err == nil {
+		t.Fatal("a changed host key was accepted")
+	}
+	if !errors.Is(err, ErrHostKeyChanged) {
+		t.Errorf("err = %v, want it to unwrap to ErrHostKeyChanged", err)
+	}
+	for _, want := range []string{"rasputin forget rasputin002", "-trust-new-keys"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to suggest %q", err, want)
+		}
+	}
+
+	// A node that is simply down must not look like one whose key changed.
+	down := dialerFor(t, srv, []string{"berry"}, st)
+	down.Port = 1 // nothing listens there, so the dial is refused at once
+	if _, err := down.Dial(context.Background(), "rasputin003", "127.0.0.1"); errors.Is(err, ErrHostKeyChanged) {
+		t.Errorf("an unreachable node reported a host key change: %v", err)
 	}
 }
 

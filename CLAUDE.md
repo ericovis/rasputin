@@ -117,6 +117,13 @@ Each of these has a regression test. If you touch the area, run it.
   trimmed to zeros. Gate on `card_used_bytes`, the decode verification
   (`verifyImage` requires the decoded length to equal the partition table's
   `UsedBytes`) and a real clone.
+- **A sync run from another machine leaves this machine's pins stale.**
+  `out/state.json` pins each node's host key, and only the machine that
+  flashes drops the pin; after somebody else reflashes the cluster, every
+  connection here fails as a changed host key and `sync` refuses to plan.
+  `rasputin forget <node|all>` drops the pins, `sync -trust-new-keys` re-pins
+  as it goes; the plan's refusal says so because `sshx.ErrHostKeyChanged`
+  survives the error chain through `nodes.Resolver.Connect`.
 - **Never trust a hostname.** This cluster had two nodes answering to
   `rasputin002`. Every connection verifies `/sys/class/net/eth0/address`
   against the config before acting. Do not weaken that.

@@ -2,12 +2,14 @@ package up
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/ericovis/rasputin/internal/cluster"
 	"github.com/ericovis/rasputin/internal/config"
 	"github.com/ericovis/rasputin/internal/prepare"
+	"github.com/ericovis/rasputin/internal/sshx"
 )
 
 // TestPlanNothingToDo is the case the whole command exists for: a cluster
@@ -237,6 +239,29 @@ func TestPlanRefusesUnreachableNodes(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %q", err, want)
 		}
+	}
+}
+
+// TestPlanHintsAtAStaleHostKeyPin: a node whose pinned key changed answers
+// perfectly well, so "power it up" would be the wrong advice — the operator
+// has to be told about `forget` and -trust-new-keys instead.
+func TestPlanHintsAtAStaleHostKeyPin(t *testing.T) {
+	f := newFake(t)
+	down := f.node("rasputin002")
+	down.Reachable = false
+	down.Err = sshx.WrapHostKeyChanged(fmt.Errorf("rasputin002 is unreachable: host key for rasputin002 changed"))
+
+	_, err := NewPlan(context.Background(), f.deps(), Options{LogPath: "-"})
+	if err == nil {
+		t.Fatal("NewPlan accepted a node it could not connect to")
+	}
+	for _, want := range []string{"rasputin002", "rasputin forget", "-trust-new-keys", "investigate", "rasputin.yaml"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "Power them up, or drop them") {
+		t.Errorf("error %q gives the plain-unreachable advice for a changed host key", err)
 	}
 }
 
