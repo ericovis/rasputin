@@ -3,10 +3,12 @@ package card
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -250,6 +252,8 @@ type sectors struct {
 	got   []byte
 	syncs int
 	err   error
+	// syncErr is what the medium answers fsync with, as a raw node does.
+	syncErr error
 }
 
 func (s *sectors) Write(p []byte) (int, error) {
@@ -261,7 +265,7 @@ func (s *sectors) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (s *sectors) Sync() error { s.syncs++; return nil }
+func (s *sectors) Sync() error { s.syncs++; return s.syncErr }
 
 // TestAlignedSyncKeepsThePartialSector is the trap this buffer exists for.
 // Sync is not a "the image is over" signal: the shared pipeline calls it
@@ -296,6 +300,34 @@ func TestAlignedSyncKeepsThePartialSector(t *testing.T) {
 	}
 	if !bytes.Equal(strict.got, want) {
 		t.Errorf("the medium took %d bytes, want all %d of them", len(strict.got), len(want))
+	}
+}
+
+// TestAlignedSyncTakesARawNodeThatCannotFsync: /dev/rdiskN is a character
+// device, and macOS answers fsync on it with ENOTTY. The shared pipeline
+// syncs every 256 MiB, so the first one killed every real card write at
+// exactly that offset; the node is unbuffered and the answer means "nothing
+// to flush", not "lost". Any other error must still surface.
+func TestAlignedSyncTakesARawNodeThatCannotFsync(t *testing.T) {
+	raw := &sectors{syncErr: syscall.ENOTTY}
+	a := &aligned{w: raw}
+	if _, err := a.Write(make([]byte, mbr.SectorSize)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Errorf("Sync on a raw node = %v, want ENOTTY ignored", err)
+	}
+	if err := a.finish(); err != nil {
+		t.Errorf("finish on a raw node = %v, want ENOTTY ignored", err)
+	}
+	if raw.syncs != 2 {
+		t.Errorf("fsync was attempted %d times, want 2", raw.syncs)
+	}
+
+	broken := &sectors{syncErr: syscall.EIO}
+	a = &aligned{w: broken}
+	if err := a.Sync(); !errors.Is(err, syscall.EIO) {
+		t.Errorf("Sync on a failing medium = %v, want EIO", err)
 	}
 }
 

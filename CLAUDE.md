@@ -164,6 +164,12 @@ Each of these has a regression test. If you touch the area, run it.
   sectors only and the tail waits for `finish()`. Regression tests:
   `TestAlignedSyncKeepsThePartialSector` and `TestWriteDecodesTheWholeImage`,
   whose image is not a whole number of write blocks.
+- **`fsync` on `/dev/rdiskN` is ENOTTY.** The raw node is a character
+  device with no cache in front of it, and macOS answers `fsync` on it with
+  "inappropriate ioctl for device". The shared pipeline syncs every 256 MiB,
+  so the first real card write died at exactly that offset. `aligned.sync`
+  swallows ENOTTY and nothing else; the read-back is what proves the bytes
+  landed. Regression test: `TestAlignedSyncTakesARawNodeThatCannotFsync`.
 - **`write-card` must never offer an internal disk.** The picker erases what
   is chosen from it, on the owner's own Mac. `card.device` drops anything
   `Internal`, `disk0` by name, not a whole disk, or virtual, and `diskutil` is

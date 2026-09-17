@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ericovis/rasputin/internal/agent"
@@ -291,7 +292,7 @@ func (a *aligned) Sync() error {
 	if err := a.flush(whole(len(a.buf))); err != nil {
 		return err
 	}
-	return a.w.Sync()
+	return a.sync()
 }
 
 // finish flushes the tail once the stream is over. An image is a whole number
@@ -300,7 +301,20 @@ func (a *aligned) finish() error {
 	if err := a.flush(len(a.buf)); err != nil {
 		return err
 	}
-	return a.w.Sync()
+	return a.sync()
+}
+
+// sync puts what the medium has been given on the medium. A raw disk node is
+// a character device with no cache in front of it, and macOS answers fsync on
+// one with ENOTTY: there is nothing to flush, so that is not a failure. Any
+// other answer is — a file or a buffered node that will not sync has lost
+// bytes.
+func (a *aligned) sync() error {
+	err := a.w.Sync()
+	if errors.Is(err, syscall.ENOTTY) {
+		return nil
+	}
+	return err
 }
 
 // whole rounds down to a sector boundary.
