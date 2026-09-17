@@ -55,7 +55,10 @@ func (unsupportedDisk) Close() error { return nil }
 type unsupportedSystem struct{}
 
 func (unsupportedSystem) WithBoot(func(string) error) error { return unsupported("the boot partition") }
-func (unsupportedSystem) Reboot() error                     { return unsupported("reboot") }
+func (unsupportedSystem) WithUpper(func(string) error) error {
+	return unsupported("the writable layer")
+}
+func (unsupportedSystem) Reboot() error { return unsupported("reboot") }
 
 // NetworkUp is the non-Linux stub of the DHCP bring-up.
 func NetworkUp(context.Context, *kmsg.Logger) (net.IP, error) {

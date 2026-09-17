@@ -28,6 +28,14 @@ func TestSelectMode(t *testing.T) {
 		{"capture beats reflash", map[string]string{
 			FlagCapture: "http://c/", FlagReflash: "http://r/",
 		}, def, ModeCapture, "http://c/"},
+		// A reset needs no URL at all: it only deletes what is already on
+		// the card, so an empty flag file and no default is a complete
+		// instruction rather than the error it would be for the others.
+		{"reset without any url", map[string]string{FlagReset: ""}, "", ModeReset, ""},
+		{"reset ignores a url", map[string]string{FlagReset: "http://a/b.zst\n"}, def, ModeReset, ""},
+		{"reflash beats reset", map[string]string{
+			FlagReflash: "http://r/", FlagReset: "",
+		}, def, ModeReflash, "http://r/"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -62,7 +70,7 @@ func TestNeedsNetwork(t *testing.T) {
 			t.Errorf("%s should need network", m)
 		}
 	}
-	for _, m := range []Mode{ModeNormal, ModeError} {
+	for _, m := range []Mode{ModeNormal, ModeError, ModeReset} {
 		if m.NeedsNetwork() {
 			t.Errorf("%s should not need network", m)
 		}

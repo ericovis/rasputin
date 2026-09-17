@@ -71,6 +71,7 @@ const (
 	StepBake    StepID = "bake"
 	StepDryrun  StepID = "dryrun"
 	StepFlash   StepID = "flash"
+	StepReset   StepID = "reset"
 	StepStatus  StepID = "status"
 )
 

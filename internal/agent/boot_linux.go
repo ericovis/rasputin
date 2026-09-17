@@ -77,7 +77,7 @@ func ReadFlags() (map[string]string, error) {
 	defer func() { _ = syscall.Unmount(BootMount, 0) }()
 
 	files := map[string]string{}
-	for _, name := range []string{FlagDryrun, FlagCapture, FlagReflash} {
+	for _, name := range []string{FlagDryrun, FlagCapture, FlagReflash, FlagReset} {
 		data, err := os.ReadFile(filepath.Join(BootMount, name))
 		if err != nil {
 			continue // absent (or unreadable, which we treat the same way)
@@ -105,27 +105,52 @@ func WithBootRW(fn func(dir string) error) error {
 }
 
 // SwitchRoot hands control to the real system, exactly as busybox
-// switch_root does: mount p2 read-only (systemd fsck's and remounts it rw
-// itself), move /dev across, then move-mount the new root over / and exec
-// its init. It only returns on failure — on success this process is replaced.
+// switch_root does: mount the root (an overlay of the golden rootfs and the
+// writable layer, where there is one), move /dev across, then move-mount the
+// new root over / and exec its init. It only returns on failure — on success
+// this process is replaced.
 func SwitchRoot(log *kmsg.Logger) error {
 	if err := os.MkdirAll(NewRoot, 0o755); err != nil && !os.IsExist(err) {
 		return err
 	}
+	if HasUpper() {
+		err := mountOverlayRoot(log)
+		if err == nil {
+			return pivot(log)
+		}
+		// Loudly, and then carry on without it: a node that boots without
+		// its writable layer can be fixed over SSH, a node that does not
+		// boot cannot. `status` reports overlay=no and `reset` refuses such
+		// a node, so this never passes unnoticed.
+		log.Printf("ERROR: the writable layer could not be mounted (%v); "+
+			"booting the golden rootfs directly — everything written will go to it", err)
+		unmountLayers()
+	}
+	if err := mountRootRO(log); err != nil {
+		return err
+	}
+	return pivot(log)
+}
+
+// mountRootRO mounts the golden rootfs at NewRoot, retrying a card that is
+// not quite ready. Read-only: the real init is responsible for fsck and the
+// remount.
+func mountRootRO(log *kmsg.Logger) error {
 	var mountErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		// ext4 read-only: the real init is responsible for fsck + remount.
 		mountErr = syscall.Mount(RootPart, NewRoot, "ext4", syscall.MS_RDONLY, "")
 		if mountErr == nil {
-			break
+			return nil
 		}
 		log.Printf("mount %s ro attempt %d failed: %v", RootPart, attempt, mountErr)
 		time.Sleep(time.Second)
 	}
-	if mountErr != nil {
-		return fmt.Errorf("mount rootfs %s: %w", RootPart, mountErr)
-	}
+	return fmt.Errorf("mount rootfs %s: %w", RootPart, mountErr)
+}
 
+// pivot makes whatever is mounted at NewRoot the real root and execs its
+// init. It does not return on success.
+func pivot(log *kmsg.Logger) error {
 	// /proc and /sys are recreated by the real init; /dev must survive the
 	// pivot or the new init has no console.
 	_ = syscall.Unmount("/sys", 0)

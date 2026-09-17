@@ -271,7 +271,7 @@ func TestPlanRehearseInsertsDryrunBeforeFlash(t *testing.T) {
 	p := f.plan(t, Options{Rehearse: true})
 
 	got := strings.Join(stepIDs(p), " ")
-	const want = "probe prepare adopt bake dryrun flash status"
+	const want = "probe prepare adopt bake dryrun flash reset status"
 	if got != want {
 		t.Errorf("steps = %q, want %q", got, want)
 	}
@@ -321,5 +321,118 @@ func TestSummaryReadsAsAPlan(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("the summary is missing %q:\n%s", want, s)
 		}
+	}
+}
+
+// TestPlanResetIsOptOut: the whole point of the flag is that a reset is
+// destructive in its own right, so it never happens because a `sync` ran.
+func TestPlanResetIsOptOut(t *testing.T) {
+	p := newFake(t).plan(t, Options{})
+	reset := stepByID(t, p, "reset")
+	if !reset.Skip || reset.Reason != "not requested" {
+		t.Errorf("reset = %+v, want it skipped as not requested", reset)
+	}
+	if len(p.Wipes()) != 0 {
+		t.Errorf("a plan with no -reset lists wipes: %v", p.Wipes())
+	}
+}
+
+// TestPlanResetTakesEveryNodeThatIsNotBeingFlashed: a node about to be cloned
+// comes back as the golden image anyway, so resetting it would only cost two
+// more boots.
+func TestPlanResetTakesEveryNodeThatIsNotBeingFlashed(t *testing.T) {
+	f := newFake(t)
+	f.node("rasputin004").BuildID = "build-0" // only this one needs cloning
+	p := f.plan(t, Options{Reset: true})
+
+	reset := stepByID(t, p, "reset")
+	if reset.Skip {
+		t.Fatalf("reset is skipped although -reset was given: %s", reset.Reason)
+	}
+	want := []string{"rasputin001", "rasputin002", "rasputin003"}
+	if strings.Join(reset.Nodes, " ") != strings.Join(want, " ") {
+		t.Errorf("reset nodes = %v, want %v (rasputin004 is being flashed)", reset.Nodes, want)
+	}
+	// A reset destroys everything written since the last one, so it has to go
+	// through the same confirmation as a flash.
+	if strings.Join(reset.Wipes, " ") != strings.Join(want, " ") {
+		t.Errorf("reset wipes = %v, want %v", reset.Wipes, want)
+	}
+	if !p.NeedsConfirmation() {
+		t.Error("a plan that resets three nodes does not ask for confirmation")
+	}
+	wipes := strings.Join(p.Wipes(), ", ")
+	for _, want := range []string{"rasputin001 (reset)", "rasputin004 (flash)"} {
+		if !strings.Contains(wipes, want) {
+			t.Errorf("wipes = %q, want it to list %q", wipes, want)
+		}
+	}
+}
+
+func TestPlanResetSkipsWhenEveryNodeIsBeingFlashed(t *testing.T) {
+	f := newFake(t)
+	p := f.plan(t, Options{Reset: true, ForceFlash: true})
+
+	if reset := stepByID(t, p, "reset"); !reset.Skip || reset.Reason != "no nodes to reset" {
+		t.Errorf("reset = %+v, want it skipped with nothing to do", reset)
+	}
+}
+
+// TestPlanResetLeavesOutANodeWithNoWritableLayer: cluster.Reset refuses a
+// node whose golden predates the overlay, one refusal fails the step and a
+// failed step ends the run — so planning it in would abort a sync after the
+// other nodes had already been wiped. The probe knows; the plan decides.
+func TestPlanResetLeavesOutANodeWithNoWritableLayer(t *testing.T) {
+	f := newFake(t)
+	f.node("rasputin002").Overlay = false
+	p := f.plan(t, Options{Reset: true})
+
+	reset := stepByID(t, p, "reset")
+	if reset.Skip {
+		t.Fatalf("reset is skipped although three nodes can be reset: %s", reset.Reason)
+	}
+	want := []string{"rasputin001", "rasputin003", "rasputin004"}
+	if strings.Join(reset.Nodes, " ") != strings.Join(want, " ") {
+		t.Errorf("reset nodes = %v, want %v", reset.Nodes, want)
+	}
+	if strings.Join(reset.Wipes, " ") != strings.Join(want, " ") {
+		t.Errorf("reset wipes = %v, want %v; a node that is not reset is not wiped", reset.Wipes, want)
+	}
+	// The operator confirms this run, so the node left out has to be named.
+	if !strings.Contains(reset.Reason, "rasputin002") || !strings.Contains(reset.Reason, "no writable layer") {
+		t.Errorf("reason = %q, want it to name the node left out and why", reset.Reason)
+	}
+}
+
+// TestPlanResetSkipsWhenNoNodeHasAWritableLayer is today's cluster: every node
+// still runs a pre-overlay golden, so `sync -reset` has nothing it can do and
+// must say so instead of asking to wipe four nodes it would then fail on.
+func TestPlanResetSkipsWhenNoNodeHasAWritableLayer(t *testing.T) {
+	f := newFake(t)
+	for _, n := range f.cfg.Nodes {
+		f.node(n.Name).Overlay = false
+	}
+	p := f.plan(t, Options{Reset: true})
+
+	reset := stepByID(t, p, "reset")
+	if !reset.Skip {
+		t.Fatalf("reset = %+v, want it skipped", reset)
+	}
+	if !strings.Contains(reset.Reason, "flash them once") {
+		t.Errorf("reason = %q, want the way out of it", reset.Reason)
+	}
+	if len(p.Wipes()) != 0 {
+		t.Errorf("a plan that resets nothing asks to wipe: %v", p.Wipes())
+	}
+}
+
+// TestPlanResetNeedsItsDependency: a nil function field found at planning
+// time is a programming error worth catching before a node is contacted.
+func TestPlanResetNeedsItsDependency(t *testing.T) {
+	f := newFake(t)
+	deps := f.deps()
+	deps.Reset = nil
+	if _, err := NewPlan(context.Background(), deps, Options{Reset: true, LogPath: "-"}); err == nil {
+		t.Fatal("NewPlan accepted -reset with no Reset dependency")
 	}
 }

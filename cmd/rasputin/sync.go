@@ -87,6 +87,7 @@ func parseSyncFlags(cfg *config.Config, out *output, args []string) (up.Options,
 	forceBake := fs.Bool("force-bake", false, "bake a new golden image even if the current one matches the prepared image")
 	forceFlash := fs.Bool("force-flash", false, "reflash every node, including one already on the golden build")
 	rehearse := fs.Bool("rehearse", false, "dryrun every node before flashing, to prove the pipeline without writing a card")
+	reset := fs.Bool("reset", false, "wipe the writable layer of every node that is not being flashed, back to the golden image")
 	trustNewKeys := fs.Bool("trust-new-keys", false, "accept and re-pin a changed SSH host key (after a reflash done from another machine)")
 	yes := fs.Bool("yes", false, "do not ask before wiping a node")
 	plain := fs.Bool("plain", false, "print one line per event instead of drawing the progress display")
@@ -116,6 +117,7 @@ func parseSyncFlags(cfg *config.Config, out *output, args []string) (up.Options,
 		ForceBake:    *force || *forceBake,
 		ForceFlash:   *force || *forceFlash,
 		Rehearse:     *rehearse,
+		Reset:        *reset,
 		TrustNewKeys: *trustNewKeys,
 		Yes:          *yes,
 		LogPath:      *logPath,
@@ -230,8 +232,15 @@ func (u syncUI) confirm() (bool, error) {
 		return false, errors.New(
 			"this plan wipes at least one node and there is no terminal to confirm on: re-run with -yes")
 	}
-	u.Out.printf("\nProceed? [y/N] ")
-	line, err := bufio.NewReader(u.In).ReadString('\n')
+	return readYesNo(u.Out, u.In)
+}
+
+// readYesNo prints the prompt and reads one answer. `reset` asks with it too;
+// whether asking is possible at all — JSON mode never prompts — is the
+// caller's call, since only the caller knows what to say instead.
+func readYesNo(out *output, in *os.File) (bool, error) {
+	out.printf("\nProceed? [y/N] ")
+	line, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil && line == "" {
 		return false, fmt.Errorf("reading the answer: %w", err)
 	}

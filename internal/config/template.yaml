@@ -4,10 +4,13 @@ server:
   port: 8080            # 0 = random free port; bind IP is always auto-detected
 image:
   source_url: https://downloads.raspberrypi.com/raspios_lite_arm64_latest
-  rootfs_size_gb: 4     # cap for the BAKED golden only: firstrun grows the builder's
-                        # rootfs to this, so a capture streams exactly this many GiB.
-                        # Clones grow to the whole card on first boot, gated by the
-                        # marker seal leaves at /var/lib/rasputin/grow-rootfs.
+  rootfs_size_gb: 4     # size of the root filesystem: firstrun grows the builder's
+                        # rootfs to this, so a capture streams exactly this many GiB,
+                        # and every clone keeps it. On a clone the rootfs is the
+                        # read-only lower layer of an overlay; the rest of the card
+                        # becomes a writable layer (p3) that `rasputin reset` empties
+                        # in seconds. Leave room for it: a 4 GiB rootfs on a 32 GB
+                        # card leaves ~27 GB to write in.
                         # Changing it takes effect at `prepare`, not at `bake`.
 ssh:
   key: ~/.ssh/id_ed25519

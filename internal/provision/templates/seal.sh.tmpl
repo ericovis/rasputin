@@ -52,17 +52,42 @@ rm -rf /var/lib/apt/lists/* /var/log/*.gz /var/log/*.1 2>/dev/null || true
 find /var/log -type f -name '*.log' -exec truncate -s0 {} + 2>/dev/null || true
 rm -f /root/.bash_history /home/*/.bash_history 2>/dev/null || true
 
-# Arm the one-shot clone grow: rasputin-identity grows the rootfs to the
-# whole card on the next real boot only when this marker exists. It is
-# created here, immediately before capture, precisely so it gets baked into
-# the golden image — the builder never sees it between firstrun and seal, so
-# captures stay at the cap.
-log "seal: arming the clone rootfs grow"
+# --- zero the free space -----------------------------------------------------
+# A capture streams the whole used prefix of the card, deleted files and all,
+# so whatever stale bytes sit in the free space are what the compressor has to
+# encode. Zeroing them first is what makes the golden image small.
+#
+# This used to be skipped on the assumption that it meant writing tens of
+# gigabytes to the flash: it does not. firstrun grows the builder's rootfs only
+# to the cap (ROOTFS_CAP_GB), so at most cap-minus-used is written — a couple
+# of GB — and every later flash carries the saving.
+#
+# The guard is the safety: a builder whose rootfs somehow is not at the cap
+# (grown to a whole 32 GB card by an older image, say) would write tens of
+# gigabytes to the flash for nothing, so it skips instead.
+fs_kb=$(df -Pk / | awk 'NR==2 {print $2}')
+max_kb=$(( (cap_bytes / 1024) + (cap_bytes / 1024 / 10) ))
+if [ -z "$fs_kb" ] || [ "$fs_kb" -gt "$max_kb" ]; then
+    log "seal: / is ${fs_kb:-unknown} KiB, more than the ${ROOTFS_CAP_GB} GiB cap plus 10% — skipping the zero fill"
+else
+    log "seal: filling the free space of / with zeros"
+    dd if=/dev/zero of=/rasputin-zero bs=4M status=none 2>/dev/null || true
+    zeroed_kb=$(du -k /rasputin-zero 2>/dev/null | awk '{print $1}')
+    sync
+    rm -f /rasputin-zero
+    sync
+    log "seal: zeroed ${zeroed_kb:-0} KiB of free space"
+fi
+
+# Arm the one-shot writable layer: on the next real boot rasputin-identity
+# appends p3 over the rest of the card and reboots into the overlay, but only
+# when this marker exists. It is created here, immediately before capture,
+# precisely so it gets baked into the golden image — the builder never sees it
+# between firstrun and seal, so captures stay at the cap.
+log "seal: arming the clone's writable layer"
 mkdir -p /var/lib/rasputin
 : > /var/lib/rasputin/grow-rootfs
 
-# Zeroing free space would make the capture compress far better, but on a
-# 32 GB card it also writes tens of gigabytes to the flash. Not worth it.
 sync
 log "seal: complete"
 exit 0

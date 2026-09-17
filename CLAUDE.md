@@ -37,7 +37,10 @@ roff through go-md2man (pure Go, the only dependency added for it); the
 Markdown stays the single source, so there is no `.1` file to keep in step.
 
 `sync` is idempotent and is now the normal way to drive the cluster; the single
-commands stay as the escape hatch. It refuses to start when any node is
+commands stay as the escape hatch. `reset` (and `sync -reset`) is the fast
+loop: the golden rootfs is the read-only lower layer of an overlay and p3 is
+the writable upper layer, so putting a node back to the image is emptying p3
+and rebooting, not reflashing. It refuses to start when any node is
 unreachable, and every event it emits is also appended to `out/sync.log`.
 `internal/events` is the contract between orchestration and UI — orchestration
 emits `events.Event`, never draws. `internal/tui` is the **only** package
@@ -107,16 +110,41 @@ Each of these has a regression test. If you touch the area, run it.
   the old agent. After touching either package: `sync -force-prepare`, or a
   plain `prepare`.
 - **`sync` deletes `out/vanilla-custom.img`, plain `prepare` keeps it.**
-  `prepare.Options.RemoveImage`. Day 0 `dd`s that raw image to a card, so the
-  `prepare` command must not remove it; `sync` never needs it after compressing
-  and 2.9 GB has run `/` out of space mid-capture before.
-- **Never gate on the golden's compressed size.** `seal` deliberately does not
-  zero free space, so every capture carries whatever stale bytes are on the
-  card and the compressed size tracks the card's history, not the build — a
-  4 GiB golden measured *larger* than an 8 GiB one whose tail happened to be
-  trimmed to zeros. Gate on `card_used_bytes`, the decode verification
-  (`verifyImage` requires the decoded length to equal the partition table's
-  `UsedBytes`) and a real clone.
+  `prepare.Options.RemoveImage`. Nothing reads the raw image any more — day 0
+  is `write-card -image vanilla`, which decodes the `.zst` — but `prepare`
+  still keeps it, because it is the one artifact that survives a botched
+  compression and 2.9 GB has run `/` out of space mid-capture before.
+- **Never gate on the golden's compressed size.** Every capture carries
+  whatever bytes are on the card, so the compressed size tracks the card's
+  history as much as the build — a 4 GiB golden once measured *larger* than an
+  8 GiB one whose tail happened to be trimmed to zeros. `seal` now zeroes the
+  free space (bounded: the builder's rootfs is capped at
+  `image.rootfs_size_gb`, and it skips with a log line if `df` says the
+  filesystem is more than 10% over the cap), so sizes drop after the next bake
+  — and are still not a gate. Gate on `card_used_bytes`, the decode
+  verification (`verifyImage` requires the decoded length to equal the
+  partition table's `UsedBytes`) and a real clone.
+- **A flashed node reboots twice.** `rasputin-identity` appends p3 and
+  reboots on the clone's first boot, before sshd ever starts, so `flash` and
+  `bake` just see a boot that takes about a minute longer. Nothing may make
+  that first boot reachable before the reboot: a service coming up on the bare
+  rootfs would write into what is about to become the read-only layer.
+- **A reset must carry the node's host keys over.** `seal` strips
+  `/etc/ssh/ssh_host_*` and `/etc/machine-id` from the golden, so
+  `rasputin-identity` mints them on the clone's first boot — into the *upper*
+  layer, since the rootfs is read-only by then. Emptying the layer wholesale
+  would hand the node a new SSH identity on every reset and break the pinned
+  key, `known_hosts` and the DHCP lease. `agent.WipeUpper` copies
+  `IdentityGlobs` out and back; the regression test is
+  `TestWipeUpperKeepsTheNodesIdentity`.
+- **The overlay is a kernel module the agent loads itself.** The Pi kernel
+  builds overlayfs as `overlay.ko.xz` with no in-kernel decompressor, so the
+  initramfs reads it out of the rootfs (the upper layer first — an apt kernel
+  upgrade puts new modules there), unpacks it with `github.com/ulikunitz/xz`
+  and `init_module(2)`s it. Any failure on that path falls back to booting p2
+  read-write with no overlay, loudly, because a node that boots is fixable and
+  one that does not is not: `status` then shows `overlay: no`, `reset` refuses
+  the node, and whatever it writes goes into the golden bytes themselves.
 - **A sync run from another machine leaves this machine's pins stale.**
   `out/state.json` pins each node's host key, and only the machine that
   flashes drops the pin; after somebody else reflashes the cluster, every
@@ -127,6 +155,21 @@ Each of these has a regression test. If you touch the area, run it.
 - **Never trust a hostname.** This cluster had two nodes answering to
   `rasputin002`. Every connection verifies `/sys/class/net/eth0/address`
   against the config before acting. Do not weaken that.
+- **A raw disk node takes whole sectors only.** On macOS a write to
+  `/dev/rdiskN` that is not a multiple of 512 fails with EINVAL, and the zstd
+  decoder hands out whatever the frame holds. `internal/card`'s `aligned`
+  buffers the stream into sector multiples; the agent needs none of that
+  because `/dev/mmcblk0` is a block device. `Sync` is **not** the end of the
+  stream — the shared pipeline calls it every 256 MiB — so it flushes whole
+  sectors only and the tail waits for `finish()`. Regression tests:
+  `TestAlignedSyncKeepsThePartialSector` and `TestWriteDecodesTheWholeImage`,
+  whose image is not a whole number of write blocks.
+- **`write-card` must never offer an internal disk.** The picker erases what
+  is chosen from it, on the owner's own Mac. `card.device` drops anything
+  `Internal`, `disk0` by name, not a whole disk, or virtual, and `diskutil` is
+  asked for `external physical` in the first place. Regression test:
+  `TestDeviceNeverOffersThisMachinesOwnDisk`. Do not weaken that, and do not
+  add a default `-device`.
 
 ## The cluster
 

@@ -153,6 +153,11 @@ func TestSyncFlags(t *testing.T) {
 			wantPlain: true,
 		},
 		{
+			name: "-reset asks for the writable layers to be wiped",
+			args: []string{"-reset"},
+			want: up.Options{Reset: true, LogPath: up.DefaultLogPath},
+		},
+		{
 			name: "-trust-new-keys travels with the run",
 			args: []string{"-trust-new-keys"},
 			want: up.Options{TrustNewKeys: true, LogPath: up.DefaultLogPath},

@@ -44,12 +44,14 @@ func (d *fakeDisk) OpenRead() (io.ReadCloser, int64, error) {
 
 func (d *fakeDisk) Close() error { d.closes++; return nil }
 
-// fakeSystem records reboots and gives the runners a real directory to treat
-// as the boot partition.
+// fakeSystem records reboots and gives the runners real directories to treat
+// as the boot partition and the writable layer.
 type fakeSystem struct {
-	dir     string
-	reboots int
-	bootErr error
+	dir      string
+	upperDir string
+	reboots  int
+	bootErr  error
+	upperErr error
 }
 
 func (s *fakeSystem) WithBoot(fn func(string) error) error {
@@ -59,7 +61,30 @@ func (s *fakeSystem) WithBoot(fn func(string) error) error {
 	return fn(s.dir)
 }
 
+func (s *fakeSystem) WithUpper(fn func(string) error) error {
+	if s.upperErr != nil {
+		return s.upperErr
+	}
+	return fn(s.upperDir)
+}
+
 func (s *fakeSystem) Reboot() error { s.reboots++; return nil }
+
+// withUpperPart points HasUpper at a file a test controls, so a reset can be
+// run on a build host that has no SD card. present=false models a node whose
+// golden image predates the overlay.
+func withUpperPart(t *testing.T, present bool) {
+	t.Helper()
+	oldPath, oldWait := upperPath, upperWait
+	t.Cleanup(func() { upperPath, upperWait = oldPath, oldWait })
+	upperWait = 0
+	upperPath = filepath.Join(t.TempDir(), "mmcblk0p3")
+	if present {
+		if err := os.WriteFile(upperPath, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestReflashWritesTheImageAndRetries(t *testing.T) {
 	payload := bytes.Repeat([]byte("IMAGE"), 20000)
@@ -336,5 +361,95 @@ func TestRemoveFlagIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	if err := removeFlag(dir, FlagReflash); err != nil {
 		t.Errorf("removing an absent flag: %v", err)
+	}
+}
+
+// resetSystem is a fakeSystem with both a boot partition and a writable layer
+// that already holds something to throw away.
+func resetSystem(t *testing.T) *fakeSystem {
+	t.Helper()
+	sys := &fakeSystem{dir: t.TempDir(), upperDir: t.TempDir()}
+	for _, sub := range []string{UpperSubdir, WorkSubdir} {
+		path := filepath.Join(sys.upperDir, sub, "var", "log")
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "caramelo.log"), []byte("noise"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(sys.dir, FlagReset), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return sys
+}
+
+// TestResetEmptiesTheLayerAndContinuesTheBoot is what makes a reset worth
+// having: no network, no card write, no reboot — the same boot carries on
+// into a system that is the golden image again.
+func TestResetEmptiesTheLayerAndContinuesTheBoot(t *testing.T) {
+	withUpperPart(t, true)
+	sys := resetSystem(t)
+	disk := &fakeDisk{}
+
+	if err := RunMode(context.Background(), ModeReset, testClient("http://unused"), disk, sys); err != nil {
+		t.Fatalf("RunMode: %v", err)
+	}
+	for _, sub := range []string{UpperSubdir, WorkSubdir} {
+		entries, err := os.ReadDir(filepath.Join(sys.upperDir, sub))
+		if err != nil {
+			t.Fatalf("reading %s back: %v", sub, err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("%s still holds %d entries", sub, len(entries))
+		}
+	}
+	if _, err := os.Stat(filepath.Join(sys.dir, FlagReset)); !os.IsNotExist(err) {
+		t.Error("the reset flag was not removed; the node would reset again on every boot")
+	}
+	if sys.reboots != 0 {
+		t.Errorf("reboots = %d, want 0: a reset boots straight on", sys.reboots)
+	}
+	if disk.openWrite != 0 || disk.closes != 0 {
+		t.Error("a reset touched the card")
+	}
+}
+
+// TestResetWithoutAWritableLayerIsHarmless: a node still running a golden
+// image from before the overlay has nothing to reset, and must not be left
+// with a flag file that makes every boot try again.
+func TestResetWithoutAWritableLayerIsHarmless(t *testing.T) {
+	withUpperPart(t, false)
+	sys := resetSystem(t)
+
+	if err := RunMode(context.Background(), ModeReset, testClient("http://unused"), nil, sys); err != nil {
+		t.Fatalf("RunMode: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sys.dir, FlagReset)); !os.IsNotExist(err) {
+		t.Error("the reset flag survived on a node with no writable layer")
+	}
+	// The layer the fake holds is not the node's, and must not be touched.
+	if _, err := os.Stat(filepath.Join(sys.upperDir, UpperSubdir, "var", "log", "caramelo.log")); err != nil {
+		t.Errorf("a node with no writable layer had one wiped anyway: %v", err)
+	}
+}
+
+// TestResetKeepsItsFlagWhenTheWipeFails: the flag is the instruction, so it
+// only goes once the work it asks for is done. Otherwise a failed reset would
+// look like a finished one.
+func TestResetKeepsItsFlagWhenTheWipeFails(t *testing.T) {
+	withUpperPart(t, true)
+	sys := resetSystem(t)
+	sys.upperErr = fmt.Errorf("mount: no such device")
+
+	err := RunMode(context.Background(), ModeReset, testClient("http://unused"), nil, sys)
+	if err == nil {
+		t.Fatal("RunMode reported a successful reset although the layer could not be mounted")
+	}
+	if !strings.Contains(err.Error(), "writable layer") {
+		t.Errorf("err = %v, want it to name the writable layer", err)
+	}
+	if _, err := os.Stat(filepath.Join(sys.dir, FlagReset)); err != nil {
+		t.Error("the reset flag was cleared although the wipe failed; the reset would never happen")
 	}
 }

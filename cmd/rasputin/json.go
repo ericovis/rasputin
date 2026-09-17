@@ -39,7 +39,8 @@ func toNodesJSON(nodes []config.Node) []nodeJSON {
 
 // statusJSON is one row of the health table. build_id is empty on a node
 // running a stock OS; adopted says whether it boots through the recovery
-// agent; error is set when reachable is false.
+// agent; overlay says it runs on a writable layer, which is what `reset`
+// needs; error is set when reachable is false.
 type statusJSON struct {
 	Name        string `json:"name"`
 	MAC         string `json:"mac"`
@@ -51,6 +52,7 @@ type statusJSON struct {
 	Uptime      string `json:"uptime,omitempty"`
 	Provisioned bool   `json:"provisioned"`
 	Adopted     bool   `json:"adopted"`
+	Overlay     bool   `json:"overlay"`
 	Error       string `json:"error,omitempty"`
 }
 
@@ -68,6 +70,7 @@ func toStatusJSON(rows []cluster.Status) []statusJSON {
 			Uptime:      trim(r.Uptime),
 			Provisioned: r.Provisioned,
 			Adopted:     r.Adopted,
+			Overlay:     r.Overlay,
 			Error:       errString(r.Err),
 		}
 	}
@@ -160,6 +163,26 @@ func toFlashJSON(r cluster.FlashResult) flashNodeJSON {
 		Skipped:         r.Skipped,
 		BuildID:         r.BuildID,
 		Hostname:        trim(r.Hostname),
+		DurationSeconds: seconds(r.Duration),
+		Error:           errString(r.Err),
+	}
+}
+
+// resetNodeJSON is one node's reset outcome. overlay is false when the node
+// has no writable layer to wipe, which is the one refusal this command has.
+type resetNodeJSON struct {
+	Node            string  `json:"node"`
+	OK              bool    `json:"ok"`
+	Overlay         bool    `json:"overlay"`
+	DurationSeconds float64 `json:"duration_seconds"`
+	Error           string  `json:"error,omitempty"`
+}
+
+func toResetJSON(r cluster.ResetResult) resetNodeJSON {
+	return resetNodeJSON{
+		Node:            r.Node,
+		OK:              r.OK(),
+		Overlay:         r.Overlay,
 		DurationSeconds: seconds(r.Duration),
 		Error:           errString(r.Err),
 	}

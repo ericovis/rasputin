@@ -62,5 +62,6 @@ type linuxSystem struct{}
 // reboot.
 func Sys() System { return linuxSystem{} }
 
-func (linuxSystem) WithBoot(fn func(dir string) error) error { return WithBootRW(fn) }
-func (linuxSystem) Reboot() error                            { return Reboot() }
+func (linuxSystem) WithBoot(fn func(dir string) error) error  { return WithBootRW(fn) }
+func (linuxSystem) WithUpper(fn func(dir string) error) error { return WithUpperRW(fn) }
+func (linuxSystem) Reboot() error                             { return Reboot() }

@@ -276,8 +276,7 @@ func TestUploadFailsOnServerError(t *testing.T) {
 }
 
 func TestCopyWithProgressPropagatesWriteErrors(t *testing.T) {
-	c := testClient("http://unused")
-	_, err := c.copyWithProgress(context.Background(), failTarget{}, strings.NewReader("hello"))
+	_, err := copyWithProgress(context.Background(), failTarget{}, strings.NewReader("hello"), nil)
 	if err == nil || !strings.Contains(err.Error(), "write at offset") {
 		t.Fatalf("err = %v, want a write error naming the offset", err)
 	}
@@ -436,10 +435,9 @@ func (p *plainRecorder) Write(b []byte) (int, error) { return len(b), nil }
 func (p *plainRecorder) Sync() error                 { p.syncs++; return nil }
 
 func TestCopyWithProgressPipelinesWriteback(t *testing.T) {
-	c := testClient("http://unused")
 	rec := &rangeRecorder{}
 	const interval = int64(ProgressInterval)
-	n, err := c.copyWithProgress(context.Background(), rec, &sizedReader{n: 3*interval + interval/2})
+	n, err := copyWithProgress(context.Background(), rec, &sizedReader{n: 3*interval + interval/2}, nil)
 	if err != nil {
 		t.Fatalf("copyWithProgress: %v", err)
 	}
@@ -478,10 +476,9 @@ func TestStreamStillSyncsRangeSyncerTargets(t *testing.T) {
 }
 
 func TestCopyWithProgressFallbackStillSyncs(t *testing.T) {
-	c := testClient("http://unused")
 	rec := &plainRecorder{}
 	const interval = int64(ProgressInterval)
-	if _, err := c.copyWithProgress(context.Background(), rec, &sizedReader{n: 2*interval + interval/2}); err != nil {
+	if _, err := copyWithProgress(context.Background(), rec, &sizedReader{n: 2*interval + interval/2}, nil); err != nil {
 		t.Fatalf("copyWithProgress: %v", err)
 	}
 	if rec.syncs != 2 {
@@ -490,11 +487,46 @@ func TestCopyWithProgressFallbackStillSyncs(t *testing.T) {
 }
 
 func TestCopyWithProgressAwaitErrorFailsAttempt(t *testing.T) {
-	c := testClient("http://unused")
 	rec := &rangeRecorder{awaitErr: fmt.Errorf("card fell out")}
 	const interval = int64(ProgressInterval)
-	_, err := c.copyWithProgress(context.Background(), rec, &sizedReader{n: 3 * interval})
+	_, err := copyWithProgress(context.Background(), rec, &sizedReader{n: 3 * interval}, nil)
 	if err == nil || !strings.Contains(err.Error(), "awaiting writeback at offset 0") {
 		t.Fatalf("err = %v, want an awaiting-writeback error naming offset 0", err)
+	}
+}
+
+// TestWriteImageIsTheSamePipelineAsStream: the decode-and-write core is
+// shared, so an image written from a local file gets the same checksum
+// verification, the same progress reporting and the same final Sync as one
+// streamed onto a node's card.
+func TestWriteImageIsTheSamePipelineAsStream(t *testing.T) {
+	payload := bytes.Repeat([]byte("IMG"), ProgressInterval/3+10)
+	image := zstdOf(t, payload)
+
+	var dst bufTarget
+	var reports []int64
+	n, err := WriteImage(context.Background(), bytes.NewReader(image), &dst,
+		func(written int64) { reports = append(reports, written) })
+	if err != nil {
+		t.Fatalf("WriteImage: %v", err)
+	}
+	if n != int64(len(payload)) || !bytes.Equal(dst.Bytes(), payload) {
+		t.Errorf("wrote %d bytes, want the %d-byte image back", n, len(payload))
+	}
+	if len(reports) != 1 || reports[0] < int64(ProgressInterval) {
+		t.Errorf("progress reports = %v, want one at the %d-byte interval", reports, ProgressInterval)
+	}
+	// One bounded-writeback sync at the interval, one final barrier: the
+	// fallback path a plain Target takes.
+	if dst.syncs != 2 {
+		t.Errorf("syncs = %d, want 2 (one per interval, one final barrier)", dst.syncs)
+	}
+}
+
+func TestWriteImageRejectsATruncatedStream(t *testing.T) {
+	image := zstdOf(t, bytes.Repeat([]byte("y"), 200000))
+	var dst bufTarget
+	if _, err := WriteImage(context.Background(), bytes.NewReader(image[:len(image)-8]), &dst, nil); err == nil {
+		t.Fatal("WriteImage accepted a truncated image")
 	}
 }
