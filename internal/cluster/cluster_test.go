@@ -367,16 +367,21 @@ func readAllAndClose(dec *zstd.Decoder) ([]byte, error) {
 const goldenID = "20260829T021418Z-66b2f9"
 
 // flashConn is a node as flashOne sees it. release is what its
-// /etc/rasputin-release says; "" models a missing marker.
+// /etc/rasputin-release says; "" models a missing marker. root is what the
+// overlay probe answers: "overlay" for a golden clone, "ext4" for a node on
+// its bare rootfs, which is what a vanilla card looks like.
 type flashConn struct {
 	d       *flashDialer
 	release string
+	root    string
 }
 
 func (c *flashConn) Run(cmd string) (sshx.Result, error) {
 	switch {
 	case cmd == "cat "+nodes.MACPath:
 		return sshx.Result{Stdout: "b8:27:eb:01:02:03\n"}, nil
+	case cmd == overlayProbe:
+		return sshx.Result{Stdout: c.root + "\n"}, nil
 	case cmd == "cat "+ReleaseFile+" 2>/dev/null || true": // the guard's read
 		return sshx.Result{Stdout: c.release}, nil
 	case cmd == "cat "+ReleaseFile: // verifyClone's read
@@ -418,6 +423,7 @@ type flashDialer struct {
 	downFrom, upFrom       int
 	oldKey, newKey         string
 	oldRelease, newRelease string
+	root                   string   // what the node's overlay probe answers; "" is "overlay"
 	events                 []string // "push:<path>", "reboot"
 }
 
@@ -454,7 +460,11 @@ func (d *flashDialer) Dial(_ context.Context, node, host string) (nodes.Conn, er
 	} else if known != key {
 		return nil, fmt.Errorf("host key for %s changed", node)
 	}
-	return &flashConn{d: d, release: release}, nil
+	root := d.root
+	if root == "" {
+		root = "overlay"
+	}
+	return &flashConn{d: d, release: release, root: root}, nil
 }
 
 // newFlashCluster is newRebootCluster for the flash fakes; the constructor
@@ -566,6 +576,37 @@ func TestFlashSkipsANodeAlreadyOnTheGoldenBuild(t *testing.T) {
 	}
 	if !bytes.Equal(after, before) {
 		t.Errorf("known_hosts = %q, want it untouched (%q)", after, before)
+	}
+}
+
+// TestFlashProceedsOnAVanillaCardWithTheGoldensBuildID: the prepared stock
+// image carries the same build id as the golden baked from it, so a node
+// that booted a vanilla card — written by write-card, or a builder that was
+// never baked — answers the guard's read with the golden's id while running
+// a plain rootfs with no writable layer. A whole cluster once stayed on
+// its vanilla cards through a sync because of it. Only the overlay proves
+// a golden clone.
+func TestFlashProceedsOnAVanillaCardWithTheGoldensBuildID(t *testing.T) {
+	sandboxHome(t)
+	d := &flashDialer{
+		downFrom: 2, upFrom: 4,
+		oldKey: "ssh-ed25519 OLDKEY", newKey: "ssh-ed25519 NEWKEY",
+		oldRelease: goldenReleaseBody(), newRelease: goldenReleaseBody(),
+		root: "ext4",
+	}
+	c, node := newFlashCluster(t, d)
+	meta := &GoldenMeta{BuildID: goldenID}
+
+	res := c.flashOne(context.Background(), flashTestServer(t), GoldenImage, meta, node, FlashOptions{})
+
+	if !res.OK() {
+		t.Fatalf("flashOne: %v", res.Err)
+	}
+	if res.Skipped {
+		t.Error("a node on a vanilla card was skipped because its build id matched the golden's")
+	}
+	if !d.seen("push:" + FlagReflash) {
+		t.Error("no reflash flag was armed")
 	}
 }
 

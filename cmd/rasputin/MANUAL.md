@@ -307,9 +307,9 @@ runs only the stale steps in order (`probe`, `prepare`, `adopt`, `bake`,
 | `-force` | `-force-prepare -force-bake -force-flash` |
 | `-force-prepare` | rebuild the artifacts even when the fingerprint matches (needed after changing the agent's Go code) |
 | `-force-bake` | rebake the golden even when current (**wipes the builder**) |
-| `-force-flash` | flash every node even when already on the golden build |
+| `-force-flash` | flash every node even when already on the golden build and the overlay |
 | `-rehearse` | insert a `dryrun` of every node before the flash |
-| `-reset` | wipe the writable layer of every node the run is **not** flashing (a flashed node comes back pristine anyway). A node with no writable layer yet is left out of the step, named in its reason. |
+| `-reset` | wipe the writable layer of every node the run is **not** flashing (a flashed node comes back pristine anyway). A node with no writable layer is never in this step: the flash takes it. |
 | `-trust-new-keys` | accept and re-pin a changed host key (after a reflash done from another machine). Say this only if you know the node was reflashed. |
 | `-plain` | one line per event instead of the live display |
 | `-json` | plan, events and result as JSON objects (implies `-plain`, never prompts) |
@@ -319,7 +319,12 @@ A step is skipped when its output is current: `prepare` when the fingerprint
 of `rasputin.yaml` plus the rendered provision files matches
 `out/meta/prepare.json`; `adopt` when every node is adopted; `bake` when
 `out/meta/golden.json` was built from the current prepare; `flash` per node
-when its `build_id` equals the golden's.
+when its `build_id` equals the golden's **and** its root is the overlay. The
+build id alone is not proof: the prepared stock image carries the same id as
+the golden baked from it, so a node on a vanilla card (`write-card -image
+vanilla`, or a builder that was never baked) answers with the golden's id
+and no writable layer, and is cloned. So is a clone whose agent fell back to
+the bare rootfs.
 
 In text mode the plan ends with a `WILL WIPE:` line naming every node that
 loses its card, and an `estimated total`. A plan that wipes a node then
@@ -423,8 +428,10 @@ the build host.
 **Wipes every target** that is not already on the golden build. Serves
 `out/golden.img.zst`, writes the reflash flag on each node, reboots it into
 the recovery agent, waits for it to come back, and verifies build id and
-hostname. Nodes flash in parallel. A node already on the golden build is
-skipped in about a second unless `-force`. Clears the node's stale entries
+hostname. Nodes flash in parallel. A node already on the golden build *and*
+on the overlay is skipped in about a second unless `-force`; a node on a
+vanilla card carries the golden's build id but no overlay, and is flashed.
+Clears the node's stale entries
 from `~/.ssh/known_hosts` afterwards. Requires a `bake`.
 
 - **Result fields**: `golden` (`{build_id, bytes, path, url}`),

@@ -325,6 +325,7 @@ type upperSandbox struct {
 	marker  string
 	part    string // stands in for /dev/mmcblk0p3
 	fstype  string // what the blkid stub reports for part
+	sys     string // stands in for /sys/block/mmcblk0/mmcblk0p2
 	layers  string
 	reboots string
 }
@@ -345,9 +346,14 @@ func newUpperSandbox(t *testing.T, mkfsExit int) *upperSandbox {
 	s.fstype = filepath.Join(s.dir, "fstype")
 	s.layers = filepath.Join(s.dir, "layers")
 	s.reboots = filepath.Join(s.dir, "reboots")
+	s.sys = filepath.Join(s.dir, "sys", "mmcblk0p2")
 	if err := os.MkdirAll(s.bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The rootfs as the kernel reports it on a real card: p1 at 8 MiB,
+	// 512 MiB long, p2 right after it and grown to the 4 GiB cap, so it ends
+	// at sector 8388608 exactly.
+	s.rootfsAt(t, 1064960, 7323648)
 	mkfs := fmt.Sprintf("echo \"mkfs.ext4 $*\" >> \"$W\"\nexit %d\n", mkfsExit)
 	if mkfsExit == 0 {
 		mkfs = "echo \"mkfs.ext4 $*\" >> \"$W\"\necho ext4 > '" + s.fstype + "'\n"
@@ -368,6 +374,19 @@ func newUpperSandbox(t *testing.T, mkfsExit int) *upperSandbox {
 		}
 	}
 	return s
+}
+
+// rootfsAt sets what the sandbox's sysfs says about the rootfs partition.
+func (s *upperSandbox) rootfsAt(t *testing.T, start, size int) {
+	t.Helper()
+	if err := os.MkdirAll(s.sys, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, v := range map[string]int{"start": start, "size": size} {
+		if err := os.WriteFile(filepath.Join(s.sys, name), []byte(fmt.Sprintf("%d\n", v)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func (s *upperSandbox) armMarker(t *testing.T) {
@@ -405,6 +424,7 @@ func (s *upperSandbox) run(t *testing.T) {
 		"RASPUTIN_GROW_MARKER="+s.marker,
 		"RASPUTIN_GROW_DISK="+filepath.Join(s.dir, "disk"),
 		"RASPUTIN_UPPER_PART="+s.part,
+		"RASPUTIN_ROOTFS_SYS="+s.sys,
 		"RASPUTIN_LAYERS_DIR="+s.layers,
 		"RASPUTIN_REBOOT_CMD=reboot",
 	)
@@ -440,7 +460,11 @@ func TestIdentityUpperAppendsThePartitionOnceAndReboots(t *testing.T) {
 	got := s.trace(t)
 	for _, want := range []string{
 		"sfdisk --no-reread --append",
-		"<<,,L>>", // one new partition over whatever free space is left
+		// One new partition from the end of the rootfs to the end of the
+		// card. The start is spelled out: without it sfdisk takes the first
+		// free gap on the disk, the 7 MiB in front of p1, and a real cluster
+		// once came up with a 7 MiB writable layer that was 75% full.
+		"<<8388608,,L>>",
 		// Only the new partition: partx -a on the whole disk fails because
 		// p1 and p2 are registered already, and its failure would leave the
 		// node waiting for a device node udev was never asked for.
@@ -463,6 +487,40 @@ func TestIdentityUpperAppendsThePartitionOnceAndReboots(t *testing.T) {
 	// must not be allowed to continue on it.
 	if _, err := os.Stat(s.reboots); err != nil {
 		t.Error("the node did not reboot into the overlay after creating the writable layer")
+	}
+}
+
+// TestIdentityUpperStartsOnAMebibyteBoundary: sfdisk aligns a start it picks
+// itself but takes a given one verbatim, so a rootfs that ends mid-MiB has to
+// be rounded up here.
+func TestIdentityUpperStartsOnAMebibyteBoundary(t *testing.T) {
+	s := newUpperSandbox(t, 0)
+	s.rootfsAt(t, 1064960, 7323648-100)
+	s.armMarker(t)
+	s.run(t)
+	if got := s.trace(t); !strings.Contains(got, "<<8388608,,L>>") {
+		t.Errorf("sfdisk was not handed the next 1 MiB boundary:\n%s", got)
+	}
+}
+
+// TestIdentityUpperNeedsToKnowWhereTheRootfsEnds: with no way to place the
+// partition the script must do nothing and keep the marker, never fall back
+// to letting sfdisk guess.
+func TestIdentityUpperNeedsToKnowWhereTheRootfsEnds(t *testing.T) {
+	s := newUpperSandbox(t, 0)
+	if err := os.RemoveAll(s.sys); err != nil {
+		t.Fatal(err)
+	}
+	s.armMarker(t)
+	s.run(t)
+	if got := s.trace(t); strings.Contains(got, "sfdisk") {
+		t.Errorf("sfdisk ran without knowing where the rootfs ends:\n%s", got)
+	}
+	if _, err := os.Stat(s.marker); err != nil {
+		t.Error("the marker was cleared; the node would never get its writable layer")
+	}
+	if _, err := os.Stat(s.reboots); err == nil {
+		t.Error("the node rebooted for nothing")
 	}
 }
 

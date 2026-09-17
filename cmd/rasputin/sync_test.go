@@ -76,7 +76,7 @@ func (f *upFake) deps() up.Deps {
 			out := make([]cluster.Status, len(targets))
 			for i, n := range targets {
 				out[i] = cluster.Status{Name: n.Name, MAC: n.MAC, IP: "192.168.0.10",
-					Reachable: true, Adopted: true, Provisioned: true,
+					Reachable: true, Adopted: true, Provisioned: true, Overlay: true,
 					Hostname: n.Name, BuildID: f.nodeBuild}
 			}
 			return out

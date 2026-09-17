@@ -112,16 +112,19 @@ func (c *Cluster) flashOne(ctx context.Context, srv *server.Server, img Image, m
 	// Idempotency guard: a node already running the exact golden build has
 	// nothing to gain from a 13-minute rewrite of an identical card — and a
 	// bake leaves the builder in exactly that state. Any doubt (no marker,
-	// unreadable, malformed) falls through to flashing. This runs only after
-	// Connect verified the MAC, and a skip must leave every piece of
-	// host-key state alone: nothing is replaced, so the pinned key and the
-	// operator's known_hosts stay valid.
+	// unreadable, malformed) falls through to flashing. The build id is not
+	// proof on its own: the prepared stock image carries the same id as the
+	// golden baked from it, so a node still on a vanilla card answers with
+	// the golden's id. Only a golden clone boots on the overlay, so that is
+	// required too. This runs only after Connect verified the MAC, and a
+	// skip must leave every piece of host-key state alone: nothing is
+	// replaced, so the pinned key and the operator's known_hosts stay valid.
 	if !opts.Force && meta != nil && meta.BuildID != "" {
 		release, err := conn.Output("cat " + ReleaseFile + " 2>/dev/null || true")
 		if err == nil {
-			if id := buildIDFrom(release); id != "" && id == meta.BuildID {
+			if id := buildIDFrom(release); id != "" && id == meta.BuildID && hasOverlayRoot(conn) {
 				conn.Close()
-				c.Log("%s: already running golden build %s — skipping (use -force to reflash anyway)", node.Name, id)
+				c.Log("%s: already running golden build %s on the overlay — skipping (use -force to reflash anyway)", node.Name, id)
 				res.BuildID = id
 				res.Skipped = true
 				res.Duration = time.Since(start)

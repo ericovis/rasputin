@@ -54,7 +54,6 @@ type Plan struct {
 	flashTargets []config.Node
 	flashSkipped []string
 	resetTargets []config.Node
-	resetSkipped []string
 	// prepareMeta and goldenMeta are what was on disk at planning time;
 	// either may be nil.
 	prepareMeta *prepare.Meta
@@ -287,6 +286,15 @@ func (p *Plan) dryrunImage(deps Deps, bakeWillRun bool) cluster.Image {
 }
 
 // planFlash decides, per node, whether it already runs the build it should.
+//
+// The build id alone does not say so: the golden image carries the build id
+// of the prepare it was baked from, and so does the prepared stock image
+// itself, so a node booted from a vanilla card (day 0, or a builder that
+// was never baked) answers with the golden's id while running something
+// else entirely. What tells them apart is the overlay — only a golden clone
+// boots on one — so a node is current when it runs the expected build *on
+// the overlay*, and a node that fell back to its bare rootfs is cloned again
+// rather than trusted.
 func (p *Plan) planFlash(bakeWillRun bool) Step {
 	step := Step{ID: events.StepFlash, Title: "clone the golden image", Estimate: FlashManyEstimate}
 	for _, node := range p.targets {
@@ -297,7 +305,7 @@ func (p *Plan) planFlash(bakeWillRun bool) Step {
 			// The bake leaves the builder running the image it just made.
 			p.flashSkipped = append(p.flashSkipped, node.Name)
 			continue
-		case p.expectedBuild != "" && s.BuildID == p.expectedBuild:
+		case p.expectedBuild != "" && s.BuildID == p.expectedBuild && s.Overlay:
 			p.flashSkipped = append(p.flashSkipped, node.Name)
 			continue
 		}
@@ -305,7 +313,7 @@ func (p *Plan) planFlash(bakeWillRun bool) Step {
 	}
 	if len(p.flashTargets) == 0 {
 		step.Skip = true
-		step.Reason = "every node already runs golden build " + p.expectedBuild
+		step.Reason = "every node already runs golden build " + p.expectedBuild + " on the overlay"
 		if p.expectedBuild == "" {
 			step.Reason = "there is nothing left to clone"
 		}
@@ -327,12 +335,10 @@ func (p *Plan) planFlash(bakeWillRun bool) Step {
 // replacing. A node about to be cloned needs no reset — it comes back as the
 // golden image by definition — and resetting it would only cost a boot.
 //
-// A node whose root is not an overlay is dropped here rather than left to
-// fail: cluster.Reset refuses it, one refusal fails the step, and a failed
-// step stops the run — so a single node still on a pre-overlay golden would
-// abort the whole sync after the others had already been wiped. The probe
-// already knows which nodes those are, and the plan is where this repo
-// decides what not to do.
+// A node whose root is not an overlay never reaches this step: planFlash
+// does not count such a node as current, whatever its build id says, so it
+// is in the flash set and excluded here. That keeps cluster.Reset's refusal
+// of a bare rootfs from ever aborting a sync after other nodes were wiped.
 func (p *Plan) planReset(flash Step) Step {
 	step := Step{
 		ID:       events.StepReset,
@@ -351,21 +357,13 @@ func (p *Plan) planReset(flash Step) Step {
 		}
 	}
 	for _, node := range p.targets {
-		switch {
-		case flashing[node.Name]:
-		case !p.probeOf(node).Overlay:
-			p.resetSkipped = append(p.resetSkipped, node.Name)
-		default:
+		if !flashing[node.Name] {
 			p.resetTargets = append(p.resetTargets, node)
 		}
 	}
 	if len(p.resetTargets) == 0 {
 		step.Skip = true
-		step.Reason = "no nodes to reset"
-		if len(p.resetSkipped) > 0 {
-			step.Reason = fmt.Sprintf("no node has a writable layer yet (%s); flash them once",
-				strings.Join(p.resetSkipped, " "))
-		}
+		step.Reason = "no nodes to reset; every node is being flashed"
 		return step
 	}
 	step.Nodes = names(p.resetTargets)
@@ -373,9 +371,6 @@ func (p *Plan) planReset(flash Step) Step {
 	// in the same confirmation as a flash: less to lose, but still a loss.
 	step.Wipes = step.Nodes
 	step.Reason = plural(len(p.resetTargets), "node") + " to reset"
-	if len(p.resetSkipped) > 0 {
-		step.Reason += fmt.Sprintf(" (%s: no writable layer yet)", strings.Join(p.resetSkipped, " "))
-	}
 	return step
 }
 

@@ -41,6 +41,8 @@ log() {
 GROW_MARKER="${RASPUTIN_GROW_MARKER:-/var/lib/rasputin/grow-rootfs}"
 GROW_DISK="${RASPUTIN_GROW_DISK:-/dev/mmcblk0}"
 UPPER_PART="${RASPUTIN_UPPER_PART:-${GROW_DISK}p3}"
+# Where the kernel reports the rootfs partition's start and size, in sectors.
+ROOTFS_SYS="${RASPUTIN_ROOTFS_SYS:-/sys/block/mmcblk0/mmcblk0p2}"
 LAYERS_DIR="${RASPUTIN_LAYERS_DIR:-/var/lib/rasputin/layers}"
 REBOOT_CMD="${RASPUTIN_REBOOT_CMD:-systemctl reboot}"
 
@@ -68,8 +70,19 @@ make_upper() {
         card_bytes=$(blockdev --getsize64 "$GROW_DISK" 2>/dev/null || echo 0)
         [ "$card_bytes" -gt 0 ] 2>/dev/null || \
             { log "upper: cannot read the card size; leaving the marker for the next boot"; return 0; }
-        log "upper: appending a writable layer over the free space of $GROW_DISK ($card_bytes bytes)"
-        echo ',,L' | sfdisk --no-reread --append "$GROW_DISK" || \
+        # The new partition must start where the rootfs ends, and sfdisk has
+        # to be told so: left to pick a start itself it takes the first free
+        # gap on the disk, which is the few MiB in front of p1, and the
+        # writable layer comes out 7 MiB large instead of the rest of the card.
+        p2_start=$(cat "$ROOTFS_SYS/start" 2>/dev/null || echo 0)
+        p2_size=$(cat "$ROOTFS_SYS/size" 2>/dev/null || echo 0)
+        [ "$p2_start" -gt 0 ] 2>/dev/null && [ "$p2_size" -gt 0 ] 2>/dev/null || \
+            { log "upper: cannot read where the rootfs ends ($ROOTFS_SYS); leaving the marker for the next boot"; return 0; }
+        start=$((p2_start + p2_size))
+        # Round up to the 1 MiB boundary sfdisk would have chosen itself.
+        start=$(( (start + 2047) / 2048 * 2048 ))
+        log "upper: appending a writable layer from sector $start to the end of $GROW_DISK ($card_bytes bytes)"
+        echo "$start,,L" | sfdisk --no-reread --append "$GROW_DISK" || \
             { log "upper: sfdisk --append failed; leaving the marker for the next boot"; return 0; }
         # partx -a on the whole disk exits non-zero because p1 and p2 are
         # already registered, so ask it for the one partition that is new.

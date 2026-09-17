@@ -170,6 +170,23 @@ Each of these has a regression test. If you touch the area, run it.
   so the first real card write died at exactly that offset. `aligned.sync`
   swallows ENOTTY and nothing else; the read-back is what proves the bytes
   landed. Regression test: `TestAlignedSyncTakesARawNodeThatCannotFsync`.
+- **The golden and the vanilla image share a build id.** `bake` stamps the
+  prepare's id into the golden, so a node booted from `write-card -image
+  vanilla` answers `status` with the golden's `build_id` while running a
+  plain rootfs with no writable layer. The first hardware sync after the
+  overlay landed baked the golden and then skipped every flash as "already
+  current"; the whole cluster stayed on its vanilla cards. `planFlash` and
+  `flash`'s guard now require `overlay` as well as the id. Regression tests:
+  `TestPlanDecisions/one node runs a vanilla card with the golden's build id`
+  and `TestFlashProceedsOnAVanillaCardWithTheGoldensBuildID`.
+- **`sfdisk --append` takes the first free gap, not the free tail.** The
+  Trixie image starts p1 at 8 MiB, and `echo ',,L' | sfdisk --append` put
+  the writable layer into the 7 MiB in front of it: rasputin001 came up on
+  the overlay with a 7 MiB upper that was 75% full before anyone logged in.
+  `rasputin-identity` now hands sfdisk the sector after p2's end, rounded up
+  to 1 MiB, and keeps the marker if it cannot read p2's geometry. Regression
+  test: `TestIdentityUpperAppendsThePartitionOnceAndReboots` checks the
+  start sector.
 - **`write-card` must never offer an internal disk.** The picker erases what
   is chosen from it, on the owner's own Mac. `card.device` drops anything
   `Internal`, `disk0` by name, not a whole disk, or virtual, and `diskutil` is

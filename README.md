@@ -284,8 +284,8 @@ decides each step from what it found on disk and on the nodes:
 | `adopt` | a probed node has no recovery agent yet | every node is already adopted |
 | `bake` | `prepare` will run, or there is no golden, or the golden came from an older prepare | `out/meta/golden.json`'s build id matches the current prepare's |
 | `dryrun` | only with `-rehearse` | not in the plan at all otherwise |
-| `flash` | per node: the node's build id differs from the golden's | that node already runs the golden build |
-| `reset` | only with `-reset`, on every node the run is not flashing that has a writable layer | not requested, every node is being flashed anyway, or no node has a writable layer yet |
+| `flash` | per node: the node's build id differs from the golden's, or its root is not the overlay (a vanilla card carries the golden's build id, and so does a clone whose agent fell back to the bare rootfs) | that node already runs the golden build on the overlay |
+| `reset` | only with `-reset`, on every node the run is not flashing | not requested, or every node is being flashed anyway |
 | `status` | always, last | never |
 
 The prepare fingerprint is a hash of `image.source_url`, the rendered
@@ -304,7 +304,7 @@ so rather than guessing.
 | `-force` | all three `-force-*` flags at once |
 | `-force-prepare` | rebuild the artifacts even when the fingerprint matches |
 | `-force-bake` | rebake the golden even when it is current (**wipes the builder**) |
-| `-force-flash` | flash every target even when it already runs the golden build |
+| `-force-flash` | flash every target even when it already runs the golden build on the overlay |
 | `-rehearse` | run a `dryrun` on every node before the flash |
 | `-reset` | wipe the writable layer of every node the run is not flashing |
 | `-trust-new-keys` | accept and re-pin a node whose SSH host key changed (after a reflash done from another machine) |
@@ -377,8 +377,11 @@ Writes the golden image to each target node and verifies the result: build
 id matches, hostname reapplied by the identity service, systemd settles.
 Nodes flash **in parallel** — each is independent, and a node that fails is
 left safely in the retrying recovery agent, not half-written. A node
-already running the golden build is skipped in about a second, so
-`flash all` is always safe to reach for.
+already running the golden build on the overlay is skipped in about a
+second, so `flash all` is always safe to reach for. The build id alone is not
+enough to skip on: a card written from the prepared stock image carries the
+same build id as the golden baked from it, so a node on a vanilla card, or
+one whose agent fell back to the bare rootfs, is flashed.
 
 - `-force` — reflash a node even when it already runs the golden build.
 
@@ -403,7 +406,8 @@ unless `-yes`.
 
 A node whose root is not an overlay — one flashed from a golden image built
 before the writable layer existed — is refused rather than rebooted for
-nothing. `status` shows which nodes qualify.
+nothing. `status` shows which nodes qualify, and `sync` clones such a node
+instead of resetting it.
 
 ### `write-card` — put an image on a card in this machine
 

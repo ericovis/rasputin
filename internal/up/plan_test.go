@@ -123,6 +123,16 @@ func TestPlanDecisions(t *testing.T) {
 			wantFlash: []string{"rasputin003"},
 		},
 		{
+			// The prepared stock image carries the golden's build id, so a
+			// node booted from a vanilla card answers with the right id and
+			// no overlay. A whole cluster once sat out a sync on its vanilla
+			// cards because the build id alone was believed.
+			name:      "one node runs a vanilla card with the golden's build id",
+			setup:     func(f *fake) { f.node("rasputin002").Overlay = false },
+			wantRun:   []string{"flash"},
+			wantFlash: []string{"rasputin002"},
+		},
+		{
 			name:      "one node was never adopted",
 			setup:     func(f *fake) { f.node("rasputin004").Adopted = false },
 			wantRun:   []string{"adopt"},
@@ -373,20 +383,25 @@ func TestPlanResetSkipsWhenEveryNodeIsBeingFlashed(t *testing.T) {
 	f := newFake(t)
 	p := f.plan(t, Options{Reset: true, ForceFlash: true})
 
-	if reset := stepByID(t, p, "reset"); !reset.Skip || reset.Reason != "no nodes to reset" {
+	if reset := stepByID(t, p, "reset"); !reset.Skip || !strings.Contains(reset.Reason, "every node is being flashed") {
 		t.Errorf("reset = %+v, want it skipped with nothing to do", reset)
 	}
 }
 
-// TestPlanResetLeavesOutANodeWithNoWritableLayer: cluster.Reset refuses a
-// node whose golden predates the overlay, one refusal fails the step and a
-// failed step ends the run — so planning it in would abort a sync after the
-// other nodes had already been wiped. The probe knows; the plan decides.
-func TestPlanResetLeavesOutANodeWithNoWritableLayer(t *testing.T) {
+// TestPlanResetFlashesANodeWithNoWritableLayerInstead: a node whose root is
+// not an overlay — a vanilla card, or a clone whose agent fell back to the
+// bare rootfs — is not something a reset can fix, and cluster.Reset refuses
+// it. It is not a node to leave out either: it is a node to clone, and the
+// flash step takes it, so the reset step never has to refuse anything.
+func TestPlanResetFlashesANodeWithNoWritableLayerInstead(t *testing.T) {
 	f := newFake(t)
 	f.node("rasputin002").Overlay = false
 	p := f.plan(t, Options{Reset: true})
 
+	flash := stepByID(t, p, "flash")
+	if strings.Join(flash.Nodes, " ") != "rasputin002" {
+		t.Errorf("flash nodes = %v, want [rasputin002]", flash.Nodes)
+	}
 	reset := stepByID(t, p, "reset")
 	if reset.Skip {
 		t.Fatalf("reset is skipped although three nodes can be reset: %s", reset.Reason)
@@ -396,17 +411,13 @@ func TestPlanResetLeavesOutANodeWithNoWritableLayer(t *testing.T) {
 		t.Errorf("reset nodes = %v, want %v", reset.Nodes, want)
 	}
 	if strings.Join(reset.Wipes, " ") != strings.Join(want, " ") {
-		t.Errorf("reset wipes = %v, want %v; a node that is not reset is not wiped", reset.Wipes, want)
-	}
-	// The operator confirms this run, so the node left out has to be named.
-	if !strings.Contains(reset.Reason, "rasputin002") || !strings.Contains(reset.Reason, "no writable layer") {
-		t.Errorf("reason = %q, want it to name the node left out and why", reset.Reason)
+		t.Errorf("reset wipes = %v, want %v; a node that is flashed is wiped by the flash", reset.Wipes, want)
 	}
 }
 
-// TestPlanResetSkipsWhenNoNodeHasAWritableLayer is today's cluster: every node
-// still runs a pre-overlay golden, so `sync -reset` has nothing it can do and
-// must say so instead of asking to wipe four nodes it would then fail on.
+// TestPlanResetSkipsWhenNoNodeHasAWritableLayer: a whole cluster on vanilla
+// cards, or on a golden from before the overlay. `sync -reset` cannot reset
+// any of it, so it clones all of it and the reset step says why it is empty.
 func TestPlanResetSkipsWhenNoNodeHasAWritableLayer(t *testing.T) {
 	f := newFake(t)
 	for _, n := range f.cfg.Nodes {
@@ -414,15 +425,21 @@ func TestPlanResetSkipsWhenNoNodeHasAWritableLayer(t *testing.T) {
 	}
 	p := f.plan(t, Options{Reset: true})
 
+	flash := stepByID(t, p, "flash")
+	if len(flash.Nodes) != len(f.cfg.Nodes) {
+		t.Errorf("flash nodes = %v, want every node", flash.Nodes)
+	}
 	reset := stepByID(t, p, "reset")
 	if !reset.Skip {
 		t.Fatalf("reset = %+v, want it skipped", reset)
 	}
-	if !strings.Contains(reset.Reason, "flash them once") {
-		t.Errorf("reason = %q, want the way out of it", reset.Reason)
+	if !strings.Contains(reset.Reason, "being flashed") {
+		t.Errorf("reason = %q, want it to say the flash covers every node", reset.Reason)
 	}
-	if len(p.Wipes()) != 0 {
-		t.Errorf("a plan that resets nothing asks to wipe: %v", p.Wipes())
+	for _, w := range p.Wipes() {
+		if strings.Contains(w, "reset") {
+			t.Errorf("a plan that resets nothing lists a reset wipe: %v", p.Wipes())
+		}
 	}
 }
 
